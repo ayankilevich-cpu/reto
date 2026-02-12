@@ -1,0 +1,7 @@
+streamlit>=1.30
+pandas>=2.0
+plotly>=5.18
+psycopg2-binary>=2.9
+python-dotenv>=1.0
+wordcloud>=1.9
+matplotlib>=3.8
