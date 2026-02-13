@@ -510,6 +510,7 @@ def render_sidebar():
             "Comparativa modelos",
             "Calidad LLM",
             "Términos frecuentes",
+            "Dataset Gold",
             "---",
             "Delitos de odio (oficial)",
         ],
@@ -993,6 +994,393 @@ def render_terminos():
 
 
 # ============================================================
+# SECCIÓN: DATASET GOLD
+# ============================================================
+
+@st.cache_data(ttl=300)
+def load_gold_full() -> pd.DataFrame:
+    """Carga el gold dataset unido con validaciones manuales y etiquetas LLM."""
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT
+                g.message_uuid,
+                g.y_odio_final,
+                g.y_odio_bin,
+                g.y_categoria_final,
+                g.y_intensidad_final,
+                g.corrigio_odio,
+                g.corrigio_categoria,
+                g.corrigio_intensidad,
+                g.label_source,
+                g.split,
+                v.odio_flag       AS human_odio,
+                v.categoria_odio  AS human_categoria,
+                v.intensidad      AS human_intensidad,
+                v.humor_flag      AS human_humor,
+                v.annotator_id,
+                v.coincide_con_llm,
+                e.clasificacion_principal AS llm_clasif,
+                e.categoria_odio_pred     AS llm_categoria,
+                e.intensidad_pred         AS llm_intensidad,
+                e.resumen_motivo          AS llm_motivo
+            FROM processed.gold_dataset g
+            LEFT JOIN processed.validaciones_manuales v USING (message_uuid)
+            LEFT JOIN processed.etiquetas_llm e USING (message_uuid)
+            ORDER BY g.message_uuid
+        """, conn)
+    return df
+
+
+def render_gold_dataset():
+    """Sección de análisis del dataset gold (LLM + validación humana)."""
+    st.header("Dataset Gold — Evaluación del etiquetado")
+    st.caption("1,000 mensajes etiquetados por LLM y validados manualmente por anotadores humanos")
+
+    df = load_gold_full()
+
+    if df.empty:
+        st.warning("No hay datos en el gold dataset.")
+        return
+
+    # ── Filtros ──
+    st.markdown("### Filtros")
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        splits = sorted(df["split"].dropna().unique())
+        sel_splits = st.multiselect("Split", splits, default=splits, key="gold_split")
+    with col_f2:
+        annotators = sorted(df["annotator_id"].dropna().unique())
+        sel_annotators = st.multiselect("Anotador", annotators, default=annotators, key="gold_annot")
+    with col_f3:
+        labels = sorted(df["y_odio_final"].dropna().unique())
+        sel_labels = st.multiselect("Label final", labels, default=labels, key="gold_label")
+
+    if not sel_splits or not sel_annotators or not sel_labels:
+        st.warning("Selecciona al menos un valor en cada filtro.")
+        return
+
+    df_f = df[
+        df["split"].isin(sel_splits)
+        & df["annotator_id"].isin(sel_annotators)
+        & df["y_odio_final"].isin(sel_labels)
+    ]
+
+    # ── 1. KPIs ──
+    st.markdown("---")
+    st.markdown("### Indicadores clave")
+
+    total = len(df_f)
+    n_odio = (df_f["y_odio_bin"] == 1).sum()
+    n_no_odio = (df_f["y_odio_final"] == "No Odio").sum()
+    n_dudoso = (df_f["y_odio_final"] == "Dudoso").sum()
+    concordancia = df_f["coincide_con_llm"].mean() * 100 if df_f["coincide_con_llm"].notna().any() else 0
+    pct_corr_odio = df_f["corrigio_odio"].mean() * 100
+    pct_corr_cat = df_f["corrigio_categoria"].mean() * 100
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Total muestras", f"{total:,}")
+    k2.metric("Odio", f"{n_odio} ({n_odio/total*100:.0f}%)" if total else "0")
+    k3.metric("Concordancia LLM", f"{concordancia:.1f}%")
+    k4.metric("Corrección odio", f"{pct_corr_odio:.1f}%")
+    k5.metric("Corrección categoría", f"{pct_corr_cat:.1f}%")
+
+    # ── 2. Distribución del label final ──
+    st.markdown("---")
+    st.markdown("### Distribución del label final")
+
+    col_pie1, col_pie2 = st.columns(2)
+
+    with col_pie1:
+        odio_counts = df_f["y_odio_final"].value_counts().reset_index()
+        odio_counts.columns = ["Label", "Cantidad"]
+        fig_odio = px.pie(
+            odio_counts, names="Label", values="Cantidad",
+            color="Label",
+            color_discrete_map={"Odio": "#E74C3C", "No Odio": "#2ECC71", "Dudoso": "#F39C12"},
+            title="Odio / No Odio / Dudoso",
+        )
+        fig_odio.update_layout(height=350)
+        st.plotly_chart(fig_odio, use_container_width=True)
+
+    with col_pie2:
+        cat_counts = df_f["y_categoria_final"].dropna().value_counts().reset_index()
+        cat_counts.columns = ["Categoría", "Cantidad"]
+        # Etiquetas legibles
+        cat_counts["Categoría"] = cat_counts["Categoría"].map(
+            lambda x: CATEGORIAS_LABELS.get(x, x)
+        )
+        fig_cat = px.pie(
+            cat_counts, names="Categoría", values="Cantidad",
+            color_discrete_sequence=CAT_COLORS,
+            title="Categorías de odio (label final)",
+        )
+        fig_cat.update_layout(height=350)
+        st.plotly_chart(fig_cat, use_container_width=True)
+
+    # ── 3. Distribución de intensidad ──
+    st.markdown("---")
+    st.markdown("### Distribución de intensidad (solo casos de odio)")
+
+    df_odio = df_f[df_f["y_odio_bin"] == 1].copy()
+
+    if not df_odio.empty:
+        col_int1, col_int2 = st.columns(2)
+
+        with col_int1:
+            int_counts = df_odio["y_intensidad_final"].dropna().value_counts().sort_index().reset_index()
+            int_counts.columns = ["Intensidad", "Cantidad"]
+            int_counts["Intensidad"] = int_counts["Intensidad"].astype(int).map(
+                {1: "1 — Leve", 2: "2 — Ofensivo", 3: "3 — Hostil"}
+            )
+            fig_int = px.bar(
+                int_counts, x="Intensidad", y="Cantidad",
+                color="Intensidad",
+                color_discrete_map={
+                    "1 — Leve": "#F39C12",
+                    "2 — Ofensivo": "#E67E22",
+                    "3 — Hostil": "#E74C3C",
+                },
+                title="Intensidad del odio",
+            )
+            fig_int.update_layout(height=350, showlegend=False)
+            st.plotly_chart(fig_int, use_container_width=True)
+
+        with col_int2:
+            # Intensidad por categoría
+            int_cat = (
+                df_odio.dropna(subset=["y_categoria_final", "y_intensidad_final"])
+                .groupby(["y_categoria_final", "y_intensidad_final"])
+                .size()
+                .reset_index(name="Cantidad")
+            )
+            int_cat["Categoría"] = int_cat["y_categoria_final"].map(
+                lambda x: CATEGORIAS_LABELS.get(x, x)
+            )
+            int_cat["Intensidad"] = int_cat["y_intensidad_final"].astype(int).map(
+                {1: "1 — Leve", 2: "2 — Ofensivo", 3: "3 — Hostil"}
+            )
+            fig_int_cat = px.bar(
+                int_cat, x="Categoría", y="Cantidad", color="Intensidad",
+                barmode="stack",
+                color_discrete_map={
+                    "1 — Leve": "#F39C12",
+                    "2 — Ofensivo": "#E67E22",
+                    "3 — Hostil": "#E74C3C",
+                },
+                title="Intensidad por categoría",
+            )
+            fig_int_cat.update_layout(height=350, xaxis_tickangle=-30)
+            st.plotly_chart(fig_int_cat, use_container_width=True)
+    else:
+        st.info("No hay casos de odio en la selección actual.")
+
+    # ── 4. Concordancia LLM vs Humano ──
+    st.markdown("---")
+    st.markdown("### Concordancia LLM vs Humano")
+
+    col_c1, col_c2 = st.columns(2)
+
+    with col_c1:
+        # Tasa de corrección por tipo
+        correction_data = pd.DataFrame({
+            "Aspecto": ["Clasificación (odio/no)", "Categoría", "Intensidad"],
+            "% Corregido": [
+                df_f["corrigio_odio"].mean() * 100,
+                df_f["corrigio_categoria"].mean() * 100,
+                df_f["corrigio_intensidad"].mean() * 100,
+            ],
+        })
+        correction_data["% Coincide"] = 100 - correction_data["% Corregido"]
+
+        fig_corr = go.Figure()
+        fig_corr.add_trace(go.Bar(
+            x=correction_data["Aspecto"], y=correction_data["% Coincide"],
+            name="Coincide", marker_color=COLORS["success"],
+        ))
+        fig_corr.add_trace(go.Bar(
+            x=correction_data["Aspecto"], y=correction_data["% Corregido"],
+            name="Corregido", marker_color=COLORS["danger"],
+        ))
+        fig_corr.update_layout(
+            barmode="stack", title="Tasa de corrección humana",
+            yaxis_title="%", height=380,
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25),
+        )
+        st.plotly_chart(fig_corr, use_container_width=True)
+
+    with col_c2:
+        # Matriz de confusión: LLM vs Humano (clasificación principal)
+        df_conf = df_f.dropna(subset=["llm_clasif", "y_odio_final"]).copy()
+        if not df_conf.empty:
+            # Normalizar LLM labels para comparar
+            llm_map = {"ODIO": "Odio", "NO_ODIO": "No Odio", "DUDOSO": "Dudoso"}
+            df_conf["llm_label"] = df_conf["llm_clasif"].map(llm_map).fillna(df_conf["llm_clasif"])
+
+            labels_order = ["Odio", "No Odio", "Dudoso"]
+            ct = pd.crosstab(
+                df_conf["llm_label"], df_conf["y_odio_final"],
+                rownames=["LLM"], colnames=["Humano"],
+            ).reindex(index=labels_order, columns=labels_order, fill_value=0)
+
+            fig_cm = go.Figure(data=go.Heatmap(
+                z=ct.values,
+                x=ct.columns.tolist(),
+                y=ct.index.tolist(),
+                text=ct.values,
+                texttemplate="%{text}",
+                colorscale="RdYlGn_r",
+                showscale=True,
+            ))
+            fig_cm.update_layout(
+                title="Matriz de confusión (LLM vs Humano)",
+                xaxis_title="Humano (gold)",
+                yaxis_title="LLM (predicción)",
+                height=380,
+            )
+            st.plotly_chart(fig_cm, use_container_width=True)
+        else:
+            st.info("No hay datos para la matriz de confusión.")
+
+    # ── 5. Correcciones por categoría ──
+    st.markdown("---")
+    st.markdown("### Correcciones por categoría de odio")
+
+    df_odio_corr = df_f[df_f["y_odio_bin"] == 1].dropna(subset=["y_categoria_final"]).copy()
+    if not df_odio_corr.empty:
+        corr_by_cat = (
+            df_odio_corr.groupby("y_categoria_final")
+            .agg(
+                total=("message_uuid", "count"),
+                corr_odio=("corrigio_odio", "sum"),
+                corr_cat=("corrigio_categoria", "sum"),
+                corr_int=("corrigio_intensidad", "sum"),
+            )
+            .reset_index()
+        )
+        corr_by_cat["Categoría"] = corr_by_cat["y_categoria_final"].map(
+            lambda x: CATEGORIAS_LABELS.get(x, x)
+        )
+        corr_by_cat["% Corr. odio"] = (corr_by_cat["corr_odio"] / corr_by_cat["total"] * 100).round(1)
+        corr_by_cat["% Corr. categoría"] = (corr_by_cat["corr_cat"] / corr_by_cat["total"] * 100).round(1)
+        corr_by_cat["% Corr. intensidad"] = (corr_by_cat["corr_int"] / corr_by_cat["total"] * 100).round(1)
+
+        corr_melted = corr_by_cat.melt(
+            id_vars=["Categoría"],
+            value_vars=["% Corr. odio", "% Corr. categoría", "% Corr. intensidad"],
+            var_name="Tipo de corrección",
+            value_name="%",
+        )
+        fig_corr_cat = px.bar(
+            corr_melted, x="Categoría", y="%", color="Tipo de corrección",
+            barmode="group",
+            color_discrete_sequence=[COLORS["danger"], COLORS["warning"], COLORS["accent"]],
+            title="% de correcciones humanas por categoría",
+        )
+        fig_corr_cat.update_layout(height=420, xaxis_tickangle=-25)
+        st.plotly_chart(fig_corr_cat, use_container_width=True)
+
+    # ── 6. Análisis por anotador ──
+    st.markdown("---")
+    st.markdown("### Análisis por anotador")
+
+    col_a1, col_a2 = st.columns(2)
+
+    with col_a1:
+        annot_counts = df_f["annotator_id"].value_counts().reset_index()
+        annot_counts.columns = ["Anotador", "Mensajes"]
+        fig_annot = px.bar(
+            annot_counts, x="Anotador", y="Mensajes",
+            color="Anotador",
+            color_discrete_sequence=DELITOS_COLORS,
+            title="Mensajes por anotador",
+        )
+        fig_annot.update_layout(height=350, showlegend=False)
+        st.plotly_chart(fig_annot, use_container_width=True)
+
+    with col_a2:
+        # Tasa de corrección por anotador
+        corr_annot = (
+            df_f.groupby("annotator_id")
+            .agg(
+                total=("message_uuid", "count"),
+                corr_odio=("corrigio_odio", "mean"),
+            )
+            .reset_index()
+        )
+        corr_annot["% Corrigió odio"] = (corr_annot["corr_odio"] * 100).round(1)
+
+        fig_corr_annot = px.bar(
+            corr_annot, x="annotator_id", y="% Corrigió odio",
+            color="annotator_id",
+            color_discrete_sequence=DELITOS_COLORS,
+            title="% de veces que corrigió al LLM (clasif. odio)",
+        )
+        fig_corr_annot.update_layout(height=350, showlegend=False, xaxis_title="Anotador")
+        st.plotly_chart(fig_corr_annot, use_container_width=True)
+
+    # ── 7. Label source & Split ──
+    st.markdown("---")
+    st.markdown("### Origen del label y split")
+
+    col_s1, col_s2 = st.columns(2)
+
+    with col_s1:
+        source_counts = df_f["label_source"].value_counts().reset_index()
+        source_counts.columns = ["Origen", "Cantidad"]
+        source_counts["Origen"] = source_counts["Origen"].map({
+            "llm_validated": "LLM validado por humano",
+            "human_explicit": "Etiquetado humano explícito",
+        }).fillna(source_counts["Origen"])
+        fig_source = px.pie(
+            source_counts, names="Origen", values="Cantidad",
+            color_discrete_sequence=[COLORS["accent"], COLORS["warning"]],
+            title="Origen del label final",
+        )
+        fig_source.update_layout(height=350)
+        st.plotly_chart(fig_source, use_container_width=True)
+
+    with col_s2:
+        split_counts = df_f["split"].value_counts().reset_index()
+        split_counts.columns = ["Split", "Cantidad"]
+        fig_split = px.pie(
+            split_counts, names="Split", values="Cantidad",
+            color_discrete_map={"TRAIN": COLORS["primary"], "TEST": COLORS["success"]},
+            title="Distribución Train / Test",
+        )
+        fig_split.update_layout(height=350)
+        st.plotly_chart(fig_split, use_container_width=True)
+
+    # ── 8. Tabla detalle ──
+    st.markdown("---")
+    with st.expander("Tabla de datos completa"):
+        display_cols = [
+            "message_uuid", "y_odio_final", "y_categoria_final", "y_intensidad_final",
+            "llm_clasif", "llm_categoria", "llm_intensidad",
+            "corrigio_odio", "corrigio_categoria", "corrigio_intensidad",
+            "annotator_id", "label_source", "split",
+        ]
+        st.dataframe(
+            df_f[display_cols].rename(columns={
+                "y_odio_final": "Label final",
+                "y_categoria_final": "Categoría final",
+                "y_intensidad_final": "Intensidad final",
+                "llm_clasif": "LLM clasif.",
+                "llm_categoria": "LLM categoría",
+                "llm_intensidad": "LLM intensidad",
+                "corrigio_odio": "Corr. odio",
+                "corrigio_categoria": "Corr. cat.",
+                "corrigio_intensidad": "Corr. int.",
+                "annotator_id": "Anotador",
+                "label_source": "Origen",
+                "split": "Split",
+            }),
+            use_container_width=True,
+            hide_index=True,
+            height=400,
+        )
+
+
+# ============================================================
 # SECCIÓN: DELITOS DE ODIO (datos oficiales)
 # ============================================================
 
@@ -1464,6 +1852,8 @@ def main():
         render_calidad_llm()
     elif section == "Términos frecuentes":
         render_terminos()
+    elif section == "Dataset Gold":
+        render_gold_dataset()
     elif section == "Delitos de odio (oficial)":
         render_delitos()
     elif section == "---":
