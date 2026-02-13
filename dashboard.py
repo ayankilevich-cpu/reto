@@ -1004,6 +1004,7 @@ def load_gold_full() -> pd.DataFrame:
         df = pd.read_sql("""
             SELECT
                 g.message_uuid,
+                pm.platform,
                 g.y_odio_final,
                 g.y_odio_bin,
                 g.y_categoria_final,
@@ -1024,27 +1025,38 @@ def load_gold_full() -> pd.DataFrame:
                 e.intensidad_pred         AS llm_intensidad,
                 e.resumen_motivo          AS llm_motivo
             FROM processed.gold_dataset g
+            LEFT JOIN processed.mensajes pm USING (message_uuid)
             LEFT JOIN processed.validaciones_manuales v USING (message_uuid)
             LEFT JOIN processed.etiquetas_llm e USING (message_uuid)
             ORDER BY g.message_uuid
         """, conn)
+    # Etiquetas de plataforma legibles
+    df["platform_label"] = df["platform"].map(
+        {"twitter": "X", "youtube": "YouTube"}
+    ).fillna(df["platform"])
     return df
 
 
 def render_gold_dataset():
     """Sección de análisis del dataset gold (LLM + validación humana)."""
     st.header("Dataset Gold — Evaluación del etiquetado")
-    st.caption("1,000 mensajes etiquetados por LLM y validados manualmente por anotadores humanos")
-
     df = load_gold_full()
 
     if df.empty:
         st.warning("No hay datos en el gold dataset.")
         return
 
+    total_samples = len(df)
+    plat_counts = df["platform_label"].value_counts().to_dict()
+    plat_summary = ", ".join(f"{v:,} {k}" for k, v in plat_counts.items())
+    st.caption(f"{total_samples:,} mensajes validados manualmente por anotadores humanos ({plat_summary})")
+
     # ── Filtros ──
     st.markdown("### Filtros")
-    col_f1, col_f2, col_f3 = st.columns(3)
+    col_f0, col_f1, col_f2, col_f3 = st.columns(4)
+    with col_f0:
+        platforms = sorted(df["platform_label"].dropna().unique())
+        sel_platforms = st.multiselect("Plataforma", platforms, default=platforms, key="gold_plat")
     with col_f1:
         splits = sorted(df["split"].dropna().unique())
         sel_splits = st.multiselect("Split", splits, default=splits, key="gold_split")
@@ -1055,12 +1067,13 @@ def render_gold_dataset():
         labels = sorted(df["y_odio_final"].dropna().unique())
         sel_labels = st.multiselect("Label final", labels, default=labels, key="gold_label")
 
-    if not sel_splits or not sel_annotators or not sel_labels:
+    if not sel_splits or not sel_annotators or not sel_labels or not sel_platforms:
         st.warning("Selecciona al menos un valor en cada filtro.")
         return
 
     df_f = df[
-        df["split"].isin(sel_splits)
+        df["platform_label"].isin(sel_platforms)
+        & df["split"].isin(sel_splits)
         & df["annotator_id"].isin(sel_annotators)
         & df["y_odio_final"].isin(sel_labels)
     ]
@@ -1083,6 +1096,43 @@ def render_gold_dataset():
     k3.metric("Concordancia LLM", f"{concordancia:.1f}%")
     k4.metric("Corrección odio", f"{pct_corr_odio:.1f}%")
     k5.metric("Corrección categoría", f"{pct_corr_cat:.1f}%")
+
+    # ── 1b. Comparativa por plataforma ──
+    if len(sel_platforms) > 1:
+        plat_summary_df = (
+            df_f.groupby("platform_label")
+            .agg(
+                total=("message_uuid", "count"),
+                odio=("y_odio_bin", "sum"),
+                corr_odio=("corrigio_odio", "mean"),
+            )
+            .reset_index()
+        )
+        plat_summary_df["% Odio"] = (plat_summary_df["odio"] / plat_summary_df["total"] * 100).round(1)
+        plat_summary_df["% Corrección"] = (plat_summary_df["corr_odio"] * 100).round(1)
+
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            fig_plat = px.bar(
+                plat_summary_df, x="platform_label", y="total",
+                color="platform_label",
+                color_discrete_map={"X": "#1DA1F2", "YouTube": "#FF0000"},
+                title="Muestras por plataforma",
+                text="total",
+            )
+            fig_plat.update_layout(height=300, showlegend=False, xaxis_title="")
+            st.plotly_chart(fig_plat, use_container_width=True)
+
+        with col_p2:
+            fig_plat_odio = px.bar(
+                plat_summary_df, x="platform_label", y="% Odio",
+                color="platform_label",
+                color_discrete_map={"X": "#1DA1F2", "YouTube": "#FF0000"},
+                title="% Odio por plataforma",
+                text="% Odio",
+            )
+            fig_plat_odio.update_layout(height=300, showlegend=False, xaxis_title="")
+            st.plotly_chart(fig_plat_odio, use_container_width=True)
 
     # ── 2. Distribución del label final ──
     st.markdown("---")
@@ -1354,13 +1404,15 @@ def render_gold_dataset():
     st.markdown("---")
     with st.expander("Tabla de datos completa"):
         display_cols = [
-            "message_uuid", "y_odio_final", "y_categoria_final", "y_intensidad_final",
+            "platform_label", "message_uuid", "y_odio_final", "y_categoria_final",
+            "y_intensidad_final",
             "llm_clasif", "llm_categoria", "llm_intensidad",
             "corrigio_odio", "corrigio_categoria", "corrigio_intensidad",
             "annotator_id", "label_source", "split",
         ]
         st.dataframe(
             df_f[display_cols].rename(columns={
+                "platform_label": "Plataforma",
                 "y_odio_final": "Label final",
                 "y_categoria_final": "Categoría final",
                 "y_intensidad_final": "Intensidad final",
