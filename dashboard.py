@@ -510,8 +510,11 @@ def render_sidebar():
             "Comparativa modelos",
             "Calidad LLM",
             "Términos frecuentes",
+            "---",
+            "Delitos de odio (oficial)",
         ],
         index=0,
+        format_func=lambda x: x if x != "---" else "──── Datos oficiales ────",
     )
 
     st.sidebar.markdown("---")
@@ -990,6 +993,460 @@ def render_terminos():
 
 
 # ============================================================
+# SECCIÓN: DELITOS DE ODIO (datos oficiales)
+# ============================================================
+
+# Mapeo de códigos de motivo a etiquetas legibles
+BIAS_LABELS = {
+    "ANTIGITANISMO": "Antigitanismo",
+    "ANTISEMITISMO": "Antisemitismo",
+    "APOROFOBIA": "Aporofobia",
+    "DISCAPACIDAD": "Discapacidad",
+    "DISCRIM_ENFERMEDAD": "Discriminación por enfermedad",
+    "DISCRIM_GENERACIONAL": "Discriminación generacional",
+    "DISCRIM_SEXO_GENERO": "Discriminación sexo/género",
+    "IDEOLOGIA": "Ideología",
+    "ORI_SEX_IDENT_GEN": "Orientación sexual / Identidad de género",
+    "RACISMO_XENOFOBIA": "Racismo / Xenofobia",
+    "RELIGION": "Religión",
+    "ISLAMOFOBIA": "Islamofobia",
+}
+
+AGE_LABELS = {
+    "MENORES": "Menores de edad",
+    "18_25": "18-25 años",
+    "26_40": "26-40 años",
+    "41_50": "41-50 años",
+    "51_65": "51-65 años",
+    "65_MAS": "+65 años",
+    "DESCONOCIDA": "Desconocida",
+}
+
+AGE_ORDER = ["MENORES", "18_25", "26_40", "41_50", "51_65", "65_MAS", "DESCONOCIDA"]
+
+DELITOS_COLORS = [
+    "#E74C3C", "#3498DB", "#2ECC71", "#F39C12", "#9B59B6",
+    "#1ABC9C", "#E67E22", "#34495E", "#E91E63", "#00BCD4",
+    "#8BC34A", "#FF5722",
+]
+
+
+def _bias_label(code: str) -> str:
+    return BIAS_LABELS.get(code, code)
+
+
+def _age_label(code: str) -> str:
+    return AGE_LABELS.get(code, code)
+
+
+@st.cache_data(ttl=300)
+def load_crime_totals() -> pd.DataFrame:
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT year, bias_motive_code, crimes_total
+            FROM delitos.fact_crime_totals_minint
+            ORDER BY year, bias_motive_code
+        """, conn)
+    df["motivo"] = df["bias_motive_code"].map(_bias_label)
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_crime_solved() -> pd.DataFrame:
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT year, bias_motive_code, crimes_solved
+            FROM delitos.fact_crime_solved_minint
+            ORDER BY year, bias_motive_code
+        """, conn)
+    df["motivo"] = df["bias_motive_code"].map(_bias_label)
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_authors_age() -> pd.DataFrame:
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT year, age_group_code, n_authors
+            FROM delitos.fact_authors_by_age_minint
+            ORDER BY year, age_group_code
+        """, conn)
+    df["grupo_edad"] = df["age_group_code"].map(_age_label)
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_investigations_sex() -> pd.DataFrame:
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT year, bias_code, male, female
+            FROM delitos.fact_investigaciones_sexo_minint
+            ORDER BY year, bias_code
+        """, conn)
+    df["motivo"] = df["bias_code"].map(_bias_label)
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_suspects_bias() -> pd.DataFrame:
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT year, bias_code, n_detained_or_investigated
+            FROM delitos.fact_suspects_by_bias_minint
+            ORDER BY year, bias_code
+        """, conn)
+    df["motivo"] = df["bias_code"].map(_bias_label)
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_prosecution_motives() -> pd.DataFrame:
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT source_type, year, motive_code, motive_label, value
+            FROM delitos.fact_prosecution_discrimination_motives
+            WHERE motive_code != 'TOTAL'
+            ORDER BY year, motive_code
+        """, conn)
+    df["tipo"] = df["source_type"].map({
+        "investigation": "Diligencias",
+        "complaint": "Denuncias",
+    })
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_prosecution_articles() -> pd.DataFrame:
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT year, legal_article, article_label, accusations_count
+            FROM delitos.fact_prosecution_legal_articles
+            ORDER BY year, legal_article
+        """, conn)
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_fiscalia_investigations() -> pd.DataFrame:
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT year, legal_article, legal_description, investigations
+            FROM delitos.fact_fiscalia_investigations_by_legal_article
+            ORDER BY year, investigations DESC
+        """, conn)
+    return df
+
+
+def render_delitos():
+    """Sección de datos oficiales de delitos de odio en España."""
+    st.header("Delitos de odio — Datos oficiales España")
+    st.caption("Fuente: Ministerio del Interior y Fiscalía General del Estado (2018-2024)")
+
+    # ── Cargar todos los datasets ──
+    df_totals = load_crime_totals()
+    df_solved = load_crime_solved()
+    df_age = load_authors_age()
+    df_sex = load_investigations_sex()
+    df_suspects = load_suspects_bias()
+    df_prosecution = load_prosecution_motives()
+    df_articles = load_prosecution_articles()
+    df_fiscalia = load_fiscalia_investigations()
+
+    years = sorted(df_totals["year"].unique())
+    last_year = max(years)
+    prev_year = last_year - 1
+
+    # ── Filtro de año ──
+    st.markdown("### Filtros")
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        selected_years = st.multiselect(
+            "Años", years, default=years, key="delitos_years"
+        )
+    with col_f2:
+        all_motives = sorted(df_totals["motivo"].unique())
+        selected_motives = st.multiselect(
+            "Motivos de odio", all_motives, default=all_motives, key="delitos_motives"
+        )
+
+    if not selected_years or not selected_motives:
+        st.warning("Selecciona al menos un año y un motivo.")
+        return
+
+    # Filtrar datasets
+    df_totals_f = df_totals[
+        df_totals["year"].isin(selected_years) & df_totals["motivo"].isin(selected_motives)
+    ]
+    df_solved_f = df_solved[
+        df_solved["year"].isin(selected_years) & df_solved["motivo"].isin(selected_motives)
+    ]
+
+    # ── 1. KPIs ──
+    st.markdown("---")
+    st.markdown("### Indicadores clave")
+
+    total_last = df_totals[df_totals["year"] == last_year]["crimes_total"].sum()
+    total_prev = df_totals[df_totals["year"] == prev_year]["crimes_total"].sum()
+    solved_last = df_solved[df_solved["year"] == last_year]["crimes_solved"].sum()
+    variation = ((total_last - total_prev) / total_prev * 100) if total_prev else 0
+    solve_rate = (solved_last / total_last * 100) if total_last else 0
+    top_motive = (
+        df_totals[df_totals["year"] == last_year]
+        .sort_values("crimes_total", ascending=False)
+        .iloc[0]["motivo"]
+        if not df_totals[df_totals["year"] == last_year].empty else "N/A"
+    )
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric(f"Total delitos ({last_year})", f"{total_last:,}")
+    k2.metric("Variación interanual", f"{variation:+.1f}%")
+    k3.metric("Tasa esclarecimiento", f"{solve_rate:.1f}%")
+    k4.metric("Motivo principal", top_motive)
+
+    # ── 2. Evolución temporal ──
+    st.markdown("---")
+    st.markdown("### Evolución de delitos de odio por año")
+
+    agg_year = (
+        df_totals_f.groupby(["year", "motivo"])["crimes_total"]
+        .sum()
+        .reset_index()
+    )
+
+    tab_line, tab_bar = st.tabs(["Líneas", "Barras apiladas"])
+
+    with tab_line:
+        fig_line = px.line(
+            agg_year, x="year", y="crimes_total", color="motivo",
+            markers=True,
+            labels={"year": "Año", "crimes_total": "Nº delitos", "motivo": "Motivo"},
+            color_discrete_sequence=DELITOS_COLORS,
+        )
+        fig_line.update_layout(
+            xaxis=dict(dtick=1),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.35),
+            height=500,
+        )
+        st.plotly_chart(fig_line, use_container_width=True)
+
+    with tab_bar:
+        fig_bar = px.bar(
+            agg_year, x="year", y="crimes_total", color="motivo",
+            labels={"year": "Año", "crimes_total": "Nº delitos", "motivo": "Motivo"},
+            color_discrete_sequence=DELITOS_COLORS,
+        )
+        fig_bar.update_layout(
+            barmode="stack",
+            xaxis=dict(dtick=1),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.35),
+            height=500,
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    # ── 3. Tasa de esclarecimiento ──
+    st.markdown("---")
+    st.markdown("### Tasa de esclarecimiento por motivo")
+
+    col_yr = st.selectbox(
+        "Año de referencia", sorted(selected_years, reverse=True),
+        key="solve_year",
+    )
+
+    totals_yr = df_totals[df_totals["year"] == col_yr][["motivo", "crimes_total"]]
+    solved_yr = df_solved[df_solved["year"] == col_yr][["motivo", "crimes_solved"]]
+    merged = totals_yr.merge(solved_yr, on="motivo", how="left").fillna(0)
+    merged["no_esclarecidos"] = merged["crimes_total"] - merged["crimes_solved"]
+    merged = merged.sort_values("crimes_total", ascending=True)
+
+    fig_solve = go.Figure()
+    fig_solve.add_trace(go.Bar(
+        y=merged["motivo"], x=merged["crimes_solved"],
+        name="Esclarecidos", orientation="h",
+        marker_color=COLORS["success"],
+    ))
+    fig_solve.add_trace(go.Bar(
+        y=merged["motivo"], x=merged["no_esclarecidos"],
+        name="No esclarecidos", orientation="h",
+        marker_color=COLORS["muted"],
+    ))
+    fig_solve.update_layout(
+        barmode="stack",
+        xaxis_title="Nº delitos",
+        height=450,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.2),
+    )
+    st.plotly_chart(fig_solve, use_container_width=True)
+
+    # ── 4. Perfil de autores por edad ──
+    st.markdown("---")
+    st.markdown("### Perfil de autores por grupo de edad")
+
+    df_age_f = df_age[df_age["year"].isin(selected_years)]
+    df_age_f = df_age_f[df_age_f["age_group_code"] != "DESCONOCIDA"]
+
+    # Ordenar por AGE_ORDER
+    age_order_labels = [_age_label(a) for a in AGE_ORDER if a != "DESCONOCIDA"]
+    df_age_f["grupo_edad"] = pd.Categorical(
+        df_age_f["grupo_edad"], categories=age_order_labels, ordered=True
+    )
+
+    tab_age_bar, tab_age_line = st.tabs(["Por año", "Evolución"])
+
+    with tab_age_bar:
+        age_agg = df_age_f.groupby(["year", "grupo_edad"])["n_authors"].sum().reset_index()
+        fig_age = px.bar(
+            age_agg, x="grupo_edad", y="n_authors", color="year",
+            barmode="group",
+            labels={"grupo_edad": "Grupo de edad", "n_authors": "Nº autores", "year": "Año"},
+            color_discrete_sequence=DELITOS_COLORS,
+        )
+        fig_age.update_layout(height=450)
+        st.plotly_chart(fig_age, use_container_width=True)
+
+    with tab_age_line:
+        age_total_yr = df_age_f.groupby(["year", "grupo_edad"])["n_authors"].sum().reset_index()
+        fig_age_l = px.line(
+            age_total_yr, x="year", y="n_authors", color="grupo_edad",
+            markers=True,
+            labels={"year": "Año", "n_authors": "Nº autores", "grupo_edad": "Grupo de edad"},
+            color_discrete_sequence=DELITOS_COLORS,
+        )
+        fig_age_l.update_layout(xaxis=dict(dtick=1), height=450)
+        st.plotly_chart(fig_age_l, use_container_width=True)
+
+    # ── 5. Investigados por sexo ──
+    st.markdown("---")
+    st.markdown("### Investigados/detenidos por sexo y motivo")
+
+    df_sex_f = df_sex[
+        df_sex["year"].isin(selected_years) & df_sex["motivo"].isin(selected_motives)
+    ]
+    sex_agg = df_sex_f.groupby("motivo")[["male", "female"]].sum().reset_index()
+    sex_agg = sex_agg.sort_values("male", ascending=True)
+
+    fig_sex = go.Figure()
+    fig_sex.add_trace(go.Bar(
+        y=sex_agg["motivo"], x=sex_agg["male"],
+        name="Hombres", orientation="h",
+        marker_color="#3498DB",
+    ))
+    fig_sex.add_trace(go.Bar(
+        y=sex_agg["motivo"], x=sex_agg["female"],
+        name="Mujeres", orientation="h",
+        marker_color="#E74C3C",
+    ))
+    fig_sex.update_layout(
+        barmode="stack",
+        xaxis_title="Nº investigados/detenidos",
+        height=450,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.2),
+    )
+    st.plotly_chart(fig_sex, use_container_width=True)
+
+    # Porcentaje de mujeres por motivo
+    sex_agg["pct_mujeres"] = (
+        sex_agg["female"] / (sex_agg["male"] + sex_agg["female"]) * 100
+    ).round(1)
+    with st.expander("Detalle: % mujeres por motivo"):
+        st.dataframe(
+            sex_agg[["motivo", "male", "female", "pct_mujeres"]]
+            .rename(columns={
+                "motivo": "Motivo",
+                "male": "Hombres",
+                "female": "Mujeres",
+                "pct_mujeres": "% Mujeres",
+            })
+            .sort_values("% Mujeres", ascending=False),
+            use_container_width=True, hide_index=True,
+        )
+
+    # ── 6. Fiscalía: denuncias vs diligencias por motivo ──
+    st.markdown("---")
+    st.markdown("### Fiscalía: denuncias vs diligencias por motivo")
+
+    df_pros_f = df_prosecution[df_prosecution["year"].isin(selected_years)]
+
+    pros_agg = (
+        df_pros_f.groupby(["motive_label", "tipo"])["value"]
+        .sum()
+        .reset_index()
+    )
+
+    fig_pros = px.bar(
+        pros_agg, x="value", y="motive_label", color="tipo",
+        orientation="h", barmode="group",
+        labels={"value": "Cantidad", "motive_label": "Motivo", "tipo": "Tipo"},
+        color_discrete_map={"Diligencias": "#1F4E79", "Denuncias": "#F39C12"},
+    )
+    fig_pros.update_layout(
+        height=500,
+        yaxis=dict(categoryorder="total ascending"),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.2),
+    )
+    st.plotly_chart(fig_pros, use_container_width=True)
+
+    # ── 7. Artículos del Código Penal más aplicados ──
+    st.markdown("---")
+    st.markdown("### Artículos del Código Penal aplicados")
+
+    # Usar fiscalía investigations si hay datos, sino prosecution_legal_articles
+    if not df_fiscalia.empty:
+        df_art_f = df_fiscalia[df_fiscalia["year"].isin(selected_years)]
+        art_agg = (
+            df_art_f.groupby(["legal_article", "legal_description"])["investigations"]
+            .sum()
+            .reset_index()
+            .sort_values("investigations", ascending=True)
+        )
+        fig_art = px.bar(
+            art_agg, x="investigations",
+            y=art_agg["legal_article"] + " — " + art_agg["legal_description"],
+            orientation="h",
+            labels={"x": "Nº diligencias", "y": "Artículo"},
+            color_discrete_sequence=[COLORS["primary"]],
+        )
+        fig_art.update_layout(height=450, yaxis_title="")
+        st.plotly_chart(fig_art, use_container_width=True)
+    elif not df_articles.empty:
+        df_art_f = df_articles[df_articles["year"].isin(selected_years)]
+        art_agg = (
+            df_art_f.groupby(["legal_article", "article_label"])["accusations_count"]
+            .sum()
+            .reset_index()
+            .dropna(subset=["accusations_count"])
+            .sort_values("accusations_count", ascending=True)
+        )
+        if not art_agg.empty:
+            fig_art = px.bar(
+                art_agg, x="accusations_count",
+                y=art_agg["legal_article"] + " — " + art_agg["article_label"],
+                orientation="h",
+                labels={"x": "Nº acusaciones", "y": "Artículo"},
+                color_discrete_sequence=[COLORS["primary"]],
+            )
+            fig_art.update_layout(height=450, yaxis_title="")
+            st.plotly_chart(fig_art, use_container_width=True)
+        else:
+            st.info("No hay datos de acusaciones por artículo para los años seleccionados.")
+    else:
+        st.info("No hay datos de artículos del Código Penal disponibles.")
+
+    # ── Tabla resumen ──
+    st.markdown("---")
+    st.markdown("### Tabla resumen por año y motivo")
+
+    summary = (
+        df_totals_f.groupby(["year", "motivo"])["crimes_total"]
+        .sum()
+        .reset_index()
+        .pivot_table(index="motivo", columns="year", values="crimes_total", fill_value=0)
+    )
+    summary["Total"] = summary.sum(axis=1)
+    summary = summary.sort_values("Total", ascending=False)
+    st.dataframe(summary, use_container_width=True)
+
+
+# ============================================================
 # MAIN
 # ============================================================
 def main():
@@ -1007,6 +1464,10 @@ def main():
         render_calidad_llm()
     elif section == "Términos frecuentes":
         render_terminos()
+    elif section == "Delitos de odio (oficial)":
+        render_delitos()
+    elif section == "---":
+        st.info("Selecciona una sección del menú lateral.")
 
 
 if __name__ == "__main__":
