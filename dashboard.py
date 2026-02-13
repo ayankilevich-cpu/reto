@@ -493,12 +493,12 @@ def load_terminos(
 # SIDEBAR
 # ============================================================
 def render_sidebar():
-    st.sidebar.image(
-        "https://img.icons8.com/fluency/96/shield.png",
-        width=64,
-    )
-    st.sidebar.title("RETO")
-    st.sidebar.caption("Monitorización de discurso de odio")
+    logo_path = Path(__file__).parent / "logo_reto.png"
+    if logo_path.exists():
+        st.sidebar.image(str(logo_path), width=180)
+    else:
+        st.sidebar.title("ReTo")
+    st.sidebar.caption("Red de Tolerancia contra los delitos de odio")
     st.sidebar.markdown("---")
 
     section = st.sidebar.radio(
