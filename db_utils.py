@@ -23,14 +23,41 @@ except ImportError:
 
 
 def get_connection_params() -> Dict[str, Any]:
-    """Devuelve los parámetros de conexión leyendo de variables de entorno."""
-    return {
+    """Devuelve los parámetros de conexión leyendo de variables de entorno.
+
+    Si se detecta Streamlit Cloud, lee de st.secrets como alternativa.
+    """
+    # --- Streamlit Cloud: leer de st.secrets si existe ---
+    try:
+        import streamlit as st
+        sec = st.secrets.get("postgres", {})
+        if sec:
+            params: Dict[str, Any] = {
+                "host": sec.get("host", "localhost"),
+                "port": int(sec.get("port", 5432)),
+                "dbname": sec.get("dbname", "reto_db"),
+                "user": sec.get("user", "postgres"),
+                "password": sec.get("password", ""),
+            }
+            sslmode = sec.get("sslmode", "")
+            if sslmode:
+                params["sslmode"] = sslmode
+            return params
+    except Exception:
+        pass  # no estamos en Streamlit o no hay secrets
+
+    # --- Local / Pipeline: leer de variables de entorno (.env) ---
+    params = {
         "host": os.environ.get("DB_HOST", "localhost"),
         "port": int(os.environ.get("DB_PORT", 5432)),
         "dbname": os.environ.get("DB_NAME", "reto_db"),
         "user": os.environ.get("DB_USER", "postgres"),
         "password": os.environ.get("DB_PASSWORD", ""),
     }
+    sslmode = os.environ.get("DB_SSLMODE", "")
+    if sslmode:
+        params["sslmode"] = sslmode
+    return params
 
 
 @contextmanager
