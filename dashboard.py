@@ -66,7 +66,7 @@ CAT_COLORS = [
 
 # Mapeo de nombres de plataforma para mostrar
 PLATFORM_DISPLAY = {
-    "twitter": "X",
+    "x": "X",
     "youtube": "YouTube",
 }
 
@@ -511,6 +511,7 @@ def render_sidebar():
             "Calidad LLM",
             "Términos frecuentes",
             "Dataset Gold",
+            "Anotación YouTube",
             "---",
             "Delitos de odio (oficial)",
         ],
@@ -1032,7 +1033,7 @@ def load_gold_full() -> pd.DataFrame:
         """, conn)
     # Etiquetas de plataforma legibles
     df["platform_label"] = df["platform"].map(
-        {"twitter": "X", "youtube": "YouTube"}
+        {"x": "X", "youtube": "YouTube"}
     ).fillna(df["platform"])
     return df
 
@@ -1887,6 +1888,313 @@ def render_delitos():
 
 
 # ============================================================
+# ANOTACIÓN YOUTUBE
+# ============================================================
+
+def _load_annotation_queue() -> pd.DataFrame:
+    """Carga mensajes YouTube pendientes de anotación (sin cache)."""
+    skipped = st.session_state.get("ann_skipped", set())
+
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT pm.message_uuid, pm.content_original, pm.source_media,
+                   pm.matched_terms, pm.relevante_score, pm.relevante_motivo,
+                   pm.created_at
+            FROM processed.mensajes pm
+            WHERE pm.platform = 'youtube'
+              AND pm.relevante_llm = 'SI'
+              AND pm.message_uuid NOT IN (
+                  SELECT message_uuid FROM processed.validaciones_manuales
+              )
+            ORDER BY pm.relevante_score DESC NULLS LAST
+            LIMIT 100
+        """, conn)
+
+    if skipped and not df.empty:
+        df = df[~df["message_uuid"].astype(str).isin(skipped)]
+
+    return df
+
+
+def _load_annotation_kpis(annotator_id: str) -> dict:
+    """Carga KPIs de progreso de anotación YouTube."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT COUNT(*) FROM processed.mensajes pm
+            WHERE pm.platform = 'youtube'
+              AND pm.relevante_llm = 'SI'
+              AND pm.message_uuid NOT IN (
+                  SELECT message_uuid FROM processed.validaciones_manuales
+              )
+        """)
+        pendientes = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT COUNT(*) FROM processed.validaciones_manuales vm
+            JOIN processed.mensajes pm USING (message_uuid)
+            WHERE pm.platform = 'youtube'
+        """)
+        total_anotados = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT COUNT(*) FROM processed.validaciones_manuales vm
+            JOIN processed.mensajes pm USING (message_uuid)
+            WHERE pm.platform = 'youtube'
+              AND vm.annotation_date = CURRENT_DATE
+        """)
+        anotados_hoy = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT COUNT(*) FROM processed.validaciones_manuales vm
+            JOIN processed.mensajes pm USING (message_uuid)
+            WHERE pm.platform = 'youtube'
+              AND vm.annotator_id = %s
+        """, (annotator_id,))
+        por_anotador = cur.fetchone()[0]
+
+        cur.close()
+
+    return {
+        "pendientes": pendientes,
+        "total_anotados": total_anotados,
+        "anotados_hoy": anotados_hoy,
+        "por_anotador": por_anotador,
+    }
+
+
+def _save_annotation(
+    message_uuid: str,
+    odio_flag: Optional[bool],
+    categoria_odio: Optional[str],
+    intensidad: Optional[int],
+    humor_flag: bool,
+    annotator_id: str,
+) -> bool:
+    """Guarda la anotación en validaciones_manuales y gold_dataset."""
+    import random
+    from datetime import date
+
+    if odio_flag is True:
+        y_odio_final = "Odio"
+        y_odio_bin = 1
+    elif odio_flag is False:
+        y_odio_final = "No Odio"
+        y_odio_bin = 0
+    else:
+        y_odio_final = "Dudoso"
+        y_odio_bin = None
+
+    y_categoria = categoria_odio if odio_flag else None
+    y_intensidad = intensidad if odio_flag else None
+    split_val = "TRAIN" if random.random() < 0.85 else "TEST"
+
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+
+            cur.execute("""
+                INSERT INTO processed.validaciones_manuales
+                (message_uuid, odio_flag, categoria_odio, intensidad,
+                 humor_flag, annotator_id, annotation_date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (message_uuid) DO UPDATE SET
+                    odio_flag = EXCLUDED.odio_flag,
+                    categoria_odio = EXCLUDED.categoria_odio,
+                    intensidad = EXCLUDED.intensidad,
+                    humor_flag = EXCLUDED.humor_flag,
+                    annotator_id = EXCLUDED.annotator_id,
+                    annotation_date = EXCLUDED.annotation_date
+            """, (
+                message_uuid, odio_flag, categoria_odio, intensidad,
+                humor_flag, annotator_id, date.today(),
+            ))
+
+            cur.execute("""
+                INSERT INTO processed.gold_dataset
+                (message_uuid, y_odio_final, y_odio_bin, y_categoria_final,
+                 y_intensidad_final, label_source, split)
+                VALUES (%s, %s, %s, %s, %s, 'human_explicit', %s)
+                ON CONFLICT (message_uuid) DO UPDATE SET
+                    y_odio_final = EXCLUDED.y_odio_final,
+                    y_odio_bin = EXCLUDED.y_odio_bin,
+                    y_categoria_final = EXCLUDED.y_categoria_final,
+                    y_intensidad_final = EXCLUDED.y_intensidad_final,
+                    label_source = EXCLUDED.label_source
+            """, (
+                message_uuid, y_odio_final, y_odio_bin,
+                y_categoria, y_intensidad, split_val,
+            ))
+
+            cur.close()
+
+        return True
+    except Exception as e:
+        st.error(f"Error guardando anotación: {e}")
+        return False
+
+
+def render_anotacion():
+    """Sección de anotación humana para mensajes YouTube."""
+    st.title("Anotación YouTube")
+    st.markdown(
+        "Validación humana de mensajes candidatos de YouTube filtrados "
+        "por relevancia LLM."
+    )
+
+    # --- Identificación del anotador ---
+    annotator = st.text_input(
+        "Nombre / ID de anotador",
+        value=st.session_state.get("annotator_id", ""),
+        placeholder="Ej: CIEDES, Anotador1...",
+        key="ann_id_input",
+    )
+    if annotator:
+        st.session_state["annotator_id"] = annotator.strip()
+
+    if not annotator.strip():
+        st.info("Ingresa tu nombre de anotador para comenzar.")
+        return
+
+    # --- KPIs de progreso ---
+    kpis = _load_annotation_kpis(annotator.strip())
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Pendientes", f"{kpis['pendientes']:,}")
+    k2.metric("Total anotados (YT)", f"{kpis['total_anotados']:,}")
+    k3.metric("Anotados hoy", f"{kpis['anotados_hoy']:,}")
+    k4.metric(f"Por {annotator.strip()}", f"{kpis['por_anotador']:,}")
+
+    st.divider()
+
+    # --- Cola de mensajes ---
+    if "ann_skipped" not in st.session_state:
+        st.session_state["ann_skipped"] = set()
+
+    queue = _load_annotation_queue()
+
+    if queue.empty:
+        st.success("No hay mensajes pendientes de anotación.")
+        st.caption(
+            "Si esperabas mensajes, verifica que se haya ejecutado "
+            "`filtrar_relevancia_youtube.py` para generar la cola de "
+            "anotación (marca `relevante_llm = 'SI'` en los candidatos)."
+        )
+        if st.button("Limpiar saltos y recargar"):
+            st.session_state["ann_skipped"] = set()
+            st.rerun()
+        return
+
+    # Tomar el primer mensaje
+    msg = queue.iloc[0]
+    msg_uuid = str(msg["message_uuid"])
+
+    st.subheader(f"Mensaje a anotar  ({queue.shape[0]} en cola)")
+
+    # --- Mostrar contenido y metadata ---
+    col_msg, col_meta = st.columns([3, 1])
+    with col_msg:
+        st.markdown("**Texto del comentario:**")
+        st.text_area(
+            "contenido", value=str(msg["content_original"]),
+            height=130, disabled=True, label_visibility="collapsed",
+        )
+    with col_meta:
+        medio = msg.get("source_media") or "—"
+        st.markdown(f"**Medio:** {medio}")
+        terms = msg.get("matched_terms") or ""
+        if terms and pd.notna(terms):
+            st.markdown(f"**Términos:** `{terms}`")
+        score = msg.get("relevante_score")
+        if pd.notna(score):
+            st.markdown(f"**Score relevancia:** {float(score):.2f}")
+        motivo = msg.get("relevante_motivo")
+        if motivo and pd.notna(motivo):
+            st.markdown(f"**Motivo LLM:** _{motivo}_")
+
+    st.divider()
+
+    # --- Formulario de anotación ---
+    with st.form("annotation_form", clear_on_submit=True):
+        st.markdown("**Clasificación**")
+
+        odio_choice = st.radio(
+            "¿Es discurso de odio?",
+            ["Odio", "No Odio", "Dudoso"],
+            horizontal=True,
+            index=None,
+            key="ann_odio",
+        )
+
+        st.markdown("---")
+        st.markdown(
+            "*Los siguientes campos aplican solo si seleccionas **Odio**:*"
+        )
+
+        categoria = st.selectbox(
+            "Categoría de odio",
+            options=list(CATEGORIAS_LABELS.keys()),
+            format_func=lambda x: CATEGORIAS_LABELS.get(x, x),
+            index=None,
+            key="ann_cat",
+        )
+
+        intensidad = st.select_slider(
+            "Intensidad (1 = baja, 3 = alta)",
+            options=[1, 2, 3],
+            value=2,
+            key="ann_int",
+        )
+
+        humor = st.checkbox("¿Contiene humor / sarcasmo?", key="ann_humor")
+
+        st.markdown("---")
+        col_save, col_skip = st.columns(2)
+        submitted = col_save.form_submit_button(
+            "Guardar y siguiente", type="primary", use_container_width=True,
+        )
+        skipped = col_skip.form_submit_button(
+            "Saltar", use_container_width=True,
+        )
+
+    # --- Procesamiento post-form ---
+    if submitted:
+        if odio_choice is None:
+            st.error("Selecciona una clasificación (Odio / No Odio / Dudoso).")
+            return
+
+        if odio_choice == "Odio" and not categoria:
+            st.error("Si marcas **Odio**, selecciona una categoría.")
+            return
+
+        odio_flag = (
+            True if odio_choice == "Odio"
+            else (False if odio_choice == "No Odio" else None)
+        )
+        cat_val = categoria if odio_choice == "Odio" else None
+        int_val = intensidad if odio_choice == "Odio" else None
+        humor_val = humor if odio_choice == "Odio" else False
+
+        ok = _save_annotation(
+            message_uuid=msg_uuid,
+            odio_flag=odio_flag,
+            categoria_odio=cat_val,
+            intensidad=int_val,
+            humor_flag=humor_val,
+            annotator_id=annotator.strip(),
+        )
+
+        if ok:
+            st.session_state["ann_skipped"].discard(msg_uuid)
+            st.toast("Anotación guardada correctamente", icon="✅")
+            st.rerun()
+
+    if skipped:
+        st.session_state["ann_skipped"].add(msg_uuid)
+        st.rerun()
+
+
+# ============================================================
 # MAIN
 # ============================================================
 def main():
@@ -1906,6 +2214,8 @@ def main():
         render_terminos()
     elif section == "Dataset Gold":
         render_gold_dataset()
+    elif section == "Anotación YouTube":
+        render_anotacion()
     elif section == "Delitos de odio (oficial)":
         render_delitos()
     elif section == "---":
