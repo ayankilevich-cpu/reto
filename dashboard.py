@@ -607,6 +607,16 @@ def render_panel_general():
     if df_comb.empty:
         st.info("No hay datos clasificados (Gold o LLM) para los filtros seleccionados.")
     else:
+        # Cuadro resumen de fuentes
+        total_msgs = len(df_comb)
+        n_gold = (df_comb["fuente"] == "Gold").sum()
+        n_llm = (df_comb["fuente"] == "LLM").sum()
+        st.caption(
+            f"Visualizaciones basadas en **{total_msgs:,}** mensajes clasificados: "
+            f"**{n_gold:,}** validados por humanos (Gold) · "
+            f"**{n_llm:,}** etiquetados por LLM"
+        )
+
         # 1. Torta: Odio vs No Odio vs Dudoso
         pie_data = df_comb["odio_label"].value_counts().reset_index()
         pie_data.columns = ["Clasificación", "Cantidad"]
@@ -620,8 +630,16 @@ def render_panel_general():
                 color="Clasificación", color_discrete_map=color_map,
                 hole=0.45, title="Distribución Odio vs No Odio",
             )
-            fig_pie.update_traces(textinfo="label+percent+value")
-            fig_pie.update_layout(height=380, showlegend=False)
+            fig_pie.update_traces(
+                textinfo="percent",
+                textposition="inside",
+                textfont_size=14,
+            )
+            fig_pie.update_layout(
+                height=380,
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=-0.15, x=0.5, xanchor="center"),
+            )
             st.plotly_chart(fig_pie, use_container_width=True)
 
         # 2. Barras: Odio por plataforma
