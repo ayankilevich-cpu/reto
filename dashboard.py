@@ -236,6 +236,24 @@ def load_kpis(
         )
         total_medios = cur.fetchone()[0]
 
+        # gold validados (odio confirmado por humano)
+        q_gold = """
+            SELECT count(*),
+                   count(*) FILTER (WHERE g.y_odio_bin = 1)
+            FROM processed.gold_dataset g
+            JOIN processed.mensajes pm USING (message_uuid)
+        """
+        conds_g, params_g = [], []
+        if platforms:
+            conds_g.append("pm.platform IN %s"); params_g.append(tuple(platforms))
+        if medios:
+            conds_g.append("pm.source_media IN %s"); params_g.append(tuple(medios))
+        wg = f"WHERE {' AND '.join(conds_g)}" if conds_g else ""
+        cur.execute(f"{q_gold} {wg}", params_g)
+        row_g = cur.fetchone()
+        total_gold = row_g[0] or 0
+        total_gold_odio = row_g[1] or 0
+
         cur.close()
 
     return {
@@ -246,6 +264,8 @@ def load_kpis(
         "total_etiquetados_llm": total_etiquetados_llm,
         "score_promedio": score_promedio,
         "total_medios": total_medios,
+        "total_gold": total_gold,
+        "total_gold_odio": total_gold_odio,
     }
 
 
@@ -326,21 +346,13 @@ def load_intensidad_por_categoria(
 @st.cache_data(ttl=300)
 def load_ranking_medios(
     platforms: Optional[Tuple] = None,
-    prioridades: Optional[Tuple] = None,
-    clasificaciones: Optional[Tuple] = None,
 ) -> pd.DataFrame:
     platforms = list(platforms) if platforms else None
-    prioridades = list(prioridades) if prioridades else None
-    clasificaciones = list(clasificaciones) if clasificaciones else None
 
     conds = ["pm.source_media IS NOT NULL AND pm.source_media != ''"]
-    params = []
+    params: list = []
     if platforms:
         conds.append("pm.platform IN %s"); params.append(tuple(platforms))
-    if prioridades:
-        conds.append("s.priority IN %s"); params.append(tuple(prioridades))
-    if clasificaciones:
-        conds.append("e.clasificacion_principal IN %s"); params.append(tuple(clasificaciones))
 
     where = " AND ".join(conds)
 
@@ -348,15 +360,28 @@ def load_ranking_medios(
         df = pd.read_sql(f"""
             SELECT
                 pm.source_media,
-                count(DISTINCT pm.message_uuid) AS total_mensajes,
-                count(DISTINCT CASE WHEN s.pred_odio = 1 THEN s.message_uuid END) AS odio_baseline,
-                count(DISTINCT CASE WHEN e.clasificacion_principal = 'ODIO' THEN e.message_uuid END) AS odio_llm,
+                pm.platform,
+                COUNT(DISTINCT pm.message_uuid) AS total_mensajes,
+                COUNT(DISTINCT CASE WHEN pm.has_hate_terms_match
+                    THEN pm.message_uuid END) AS candidatos_dict,
+                COUNT(DISTINCT CASE WHEN s.pred_odio = 1
+                    THEN s.message_uuid END) AS odio_baseline,
+                COUNT(DISTINCT CASE WHEN e.clasificacion_principal = 'ODIO'
+                    THEN e.message_uuid END) AS odio_llm,
+                COUNT(DISTINCT CASE WHEN g.y_odio_bin = 1
+                    THEN g.message_uuid END) AS odio_gold,
+                COUNT(DISTINCT CASE
+                    WHEN s.pred_odio = 1
+                      OR e.clasificacion_principal = 'ODIO'
+                      OR g.y_odio_bin = 1
+                    THEN pm.message_uuid END) AS odio_cualquiera,
                 ROUND(AVG(s.proba_odio)::numeric, 3) AS score_promedio
             FROM processed.mensajes pm
             LEFT JOIN processed.scores s USING (message_uuid)
             LEFT JOIN processed.etiquetas_llm e USING (message_uuid)
+            LEFT JOIN processed.gold_dataset g USING (message_uuid)
             WHERE {where}
-            GROUP BY pm.source_media
+            GROUP BY pm.source_media, pm.platform
             ORDER BY total_mensajes DESC
         """, conn, params=params)
     return df
@@ -560,10 +585,16 @@ def render_panel_general():
 
     st.markdown("---")
 
-    col5, col6, col7 = st.columns(3)
+    col5, col6, col7, col8 = st.columns(4)
     col5.metric("Etiquetados por LLM", f"{kpis['total_etiquetados_llm']:,}")
     col6.metric("Score promedio", f"{kpis['score_promedio']:.3f}")
     col7.metric("Medios monitorizados", f"{kpis['total_medios']:,}")
+    col8.metric(
+        "Gold validados",
+        f"{kpis['total_gold']:,}",
+        delta=f"{kpis['total_gold_odio']:,} odio",
+        delta_color="off",
+    )
 
     st.markdown("---")
 
@@ -664,7 +695,10 @@ def render_categorias():
 
 def render_ranking_medios():
     st.title("Ranking de medios")
-    st.markdown("Medios de comunicación monitorizados, ordenados por volumen de mensajes.")
+    st.markdown(
+        "Medios de comunicación monitorizados con indicadores de odio "
+        "de todas las fuentes disponibles (diccionario, baseline, LLM, gold humano)."
+    )
 
     opts = load_filter_options()
 
@@ -673,71 +707,111 @@ def render_ranking_medios():
         "Plataforma", opts["platforms"], default=[], key="rm_plat",
         format_func=platform_label,
     )
-    sel_prioridades = fc2.multiselect(
-        "Prioridad (baseline)", opts["prioridades"], default=[], key="rm_prio",
+    fuente_odio = fc2.selectbox(
+        "Fuente de odio para ordenar",
+        [
+            "Odio (cualquier fuente)",
+            "Candidatos diccionario",
+            "Odio — Baseline",
+            "Odio — LLM",
+            "Odio — Gold (humano)",
+        ],
+        key="rm_fuente",
     )
-    sel_clasif = fc3.multiselect(
-        "Clasificación LLM", opts["clasificaciones"], default=[], key="rm_clasif",
-    )
+    top_n_default = 15
 
     df = load_ranking_medios(
         platforms=tuple(sel_platforms) if sel_platforms else None,
-        prioridades=tuple(sel_prioridades) if sel_prioridades else None,
-        clasificaciones=tuple(sel_clasif) if sel_clasif else None,
     )
     if df.empty:
         st.warning("No hay datos de medios con los filtros seleccionados.")
         return
 
-    df["pct_odio_baseline"] = (df["odio_baseline"] / df["total_mensajes"].replace(0, 1) * 100).round(1)
+    # Calcular porcentajes
+    safe_total = df["total_mensajes"].replace(0, 1)
+    df["pct_dict"] = (df["candidatos_dict"] / safe_total * 100).round(1)
+    df["pct_odio_baseline"] = (df["odio_baseline"] / safe_total * 100).round(1)
+    df["pct_odio_llm"] = (df["odio_llm"] / safe_total * 100).round(1)
+    df["pct_odio_gold"] = (df["odio_gold"] / safe_total * 100).round(1)
+    df["pct_odio_any"] = (df["odio_cualquiera"] / safe_total * 100).round(1)
+
+    # Etiqueta de plataforma
+    df["plataforma"] = df["platform"].map(PLATFORM_DISPLAY).fillna(df["platform"])
+
+    # Mapeo de fuente seleccionada a columna
+    fuente_map = {
+        "Odio (cualquier fuente)": ("odio_cualquiera", "pct_odio_any"),
+        "Candidatos diccionario": ("candidatos_dict", "pct_dict"),
+        "Odio — Baseline": ("odio_baseline", "pct_odio_baseline"),
+        "Odio — LLM": ("odio_llm", "pct_odio_llm"),
+        "Odio — Gold (humano)": ("odio_gold", "pct_odio_gold"),
+    }
+    col_abs, col_pct = fuente_map[fuente_odio]
 
     # Controles
     fc_a, fc_b = st.columns([1, 3])
-    top_n = fc_a.slider("Top N medios", 5, min(30, len(df)), 15, key="rm_topn")
+    top_n = fc_a.slider(
+        "Top N medios", 5, min(30, len(df)), min(top_n_default, len(df)),
+        key="rm_topn",
+    )
     ordenar_por = fc_b.selectbox(
         "Ordenar por",
-        ["Total mensajes", "% Odio (baseline)", "Score promedio", "Odio LLM"],
+        ["Total mensajes", "Cantidad de odio", "% de odio"],
         key="rm_order",
     )
 
-    sort_map = {
+    sort_col = {
         "Total mensajes": "total_mensajes",
-        "% Odio (baseline)": "pct_odio_baseline",
-        "Score promedio": "score_promedio",
-        "Odio LLM": "odio_llm",
-    }
-    df_sorted = df.sort_values(sort_map[ordenar_por], ascending=False)
+        "Cantidad de odio": col_abs,
+        "% de odio": col_pct,
+    }[ordenar_por]
+    df_sorted = df.sort_values(sort_col, ascending=False)
     df_top = df_sorted.head(top_n)
+
+    chart_height = max(400, top_n * 30)
 
     col1, col2 = st.columns(2)
 
     with col1:
         fig = px.bar(
             df_top, x="total_mensajes", y="source_media", orientation="h",
-            color="score_promedio", color_continuous_scale="RdYlGn_r",
-            labels={"total_mensajes": "Total mensajes", "source_media": "", "score_promedio": "Score prom."},
-            title=f"Top {top_n} medios — {ordenar_por}",
+            color="plataforma",
+            color_discrete_map={"X": "#1DA1F2", "YouTube": "#FF0000"},
+            labels={
+                "total_mensajes": "Total mensajes",
+                "source_media": "",
+                "plataforma": "Plataforma",
+            },
+            title=f"Top {top_n} medios — Volumen de mensajes",
         )
-        fig.update_layout(height=max(400, top_n * 28), yaxis=dict(autorange="reversed"))
+        fig.update_layout(height=chart_height, yaxis=dict(autorange="reversed"))
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
         fig2 = px.bar(
-            df_top, x="pct_odio_baseline", y="source_media", orientation="h",
-            color="pct_odio_baseline", color_continuous_scale="Reds",
-            labels={"pct_odio_baseline": "% Odio (baseline)", "source_media": ""},
-            title=f"Top {top_n} medios — % de odio (baseline)",
+            df_top, x=col_pct, y="source_media", orientation="h",
+            color=col_pct, color_continuous_scale="Reds",
+            labels={col_pct: f"% {fuente_odio}", "source_media": ""},
+            title=f"Top {top_n} medios — % {fuente_odio}",
         )
-        fig2.update_layout(height=max(400, top_n * 28), yaxis=dict(autorange="reversed"))
+        fig2.update_layout(height=chart_height, yaxis=dict(autorange="reversed"))
         st.plotly_chart(fig2, use_container_width=True)
 
-    st.markdown("### Detalle")
+    # Tabla detalle con todas las fuentes
+    st.markdown("### Detalle por medio")
+    detail_cols = {
+        "source_media": "Medio",
+        "plataforma": "Plataforma",
+        "total_mensajes": "Total",
+        "candidatos_dict": "Candidatos (dict)",
+        "odio_baseline": "Odio (Baseline)",
+        "odio_llm": "Odio (LLM)",
+        "odio_gold": "Odio (Gold)",
+        "odio_cualquiera": "Odio (cualquiera)",
+        "pct_odio_any": "% Odio",
+    }
     st.dataframe(
-        df_top[["source_media", "total_mensajes", "odio_baseline", "odio_llm", "score_promedio", "pct_odio_baseline"]].rename(columns={
-            "source_media": "Medio", "total_mensajes": "Total",
-            "odio_baseline": "Odio (Baseline)", "odio_llm": "Odio (LLM)",
-            "score_promedio": "Score prom.", "pct_odio_baseline": "% Odio",
-        }),
+        df_top[list(detail_cols.keys())].rename(columns=detail_cols),
         use_container_width=True, hide_index=True,
     )
 
