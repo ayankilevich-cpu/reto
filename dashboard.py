@@ -2114,39 +2114,43 @@ def render_anotacion():
 
     st.divider()
 
-    # --- Formulario de anotación ---
-    with st.form("annotation_form", clear_on_submit=True):
-        st.markdown("**Clasificación**")
+    # --- Clasificación (fuera del form para habilitar/deshabilitar campos) ---
+    st.markdown("**Clasificación**")
+    odio_choice = st.radio(
+        "¿Es discurso de odio?",
+        ["Odio", "No Odio", "Dudoso"],
+        horizontal=True,
+        index=None,
+        key="ann_odio",
+    )
 
-        odio_choice = st.radio(
-            "¿Es discurso de odio?",
-            ["Odio", "No Odio", "Dudoso"],
-            horizontal=True,
-            index=None,
-            key="ann_odio",
-        )
+    es_odio = odio_choice == "Odio"
 
-        st.markdown("---")
-        st.markdown(
-            "*Los siguientes campos aplican solo si seleccionas **Odio**:*"
-        )
+    # --- Formulario con campos condicionales ---
+    with st.form("annotation_form", clear_on_submit=False):
+        if es_odio:
+            categoria = st.selectbox(
+                "Categoría de odio",
+                options=list(CATEGORIAS_LABELS.keys()),
+                format_func=lambda x: CATEGORIAS_LABELS.get(x, x),
+                index=None,
+                key="ann_cat",
+            )
 
-        categoria = st.selectbox(
-            "Categoría de odio",
-            options=list(CATEGORIAS_LABELS.keys()),
-            format_func=lambda x: CATEGORIAS_LABELS.get(x, x),
-            index=None,
-            key="ann_cat",
-        )
+            intensidad = st.select_slider(
+                "Intensidad (1 = baja, 3 = alta)",
+                options=[1, 2, 3],
+                value=2,
+                key="ann_int",
+            )
 
-        intensidad = st.select_slider(
-            "Intensidad (1 = baja, 3 = alta)",
-            options=[1, 2, 3],
-            value=2,
-            key="ann_int",
-        )
-
-        humor = st.checkbox("¿Contiene humor / sarcasmo?", key="ann_humor")
+            humor = st.checkbox(
+                "¿Contiene humor / sarcasmo?", key="ann_humor",
+            )
+        else:
+            categoria = None
+            intensidad = None
+            humor = False
 
         st.markdown("---")
         col_save, col_skip = st.columns(2)
@@ -2163,7 +2167,7 @@ def render_anotacion():
             st.error("Selecciona una clasificación (Odio / No Odio / Dudoso).")
             return
 
-        if odio_choice == "Odio" and not categoria:
+        if es_odio and not categoria:
             st.error("Si marcas **Odio**, selecciona una categoría.")
             return
 
@@ -2171,16 +2175,13 @@ def render_anotacion():
             True if odio_choice == "Odio"
             else (False if odio_choice == "No Odio" else None)
         )
-        cat_val = categoria if odio_choice == "Odio" else None
-        int_val = intensidad if odio_choice == "Odio" else None
-        humor_val = humor if odio_choice == "Odio" else False
 
         ok = _save_annotation(
             message_uuid=msg_uuid,
             odio_flag=odio_flag,
-            categoria_odio=cat_val,
-            intensidad=int_val,
-            humor_flag=humor_val,
+            categoria_odio=categoria,
+            intensidad=intensidad,
+            humor_flag=humor,
             annotator_id=annotator.strip(),
         )
 
