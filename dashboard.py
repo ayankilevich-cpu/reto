@@ -2159,8 +2159,9 @@ def _load_annotation_queue() -> pd.DataFrame:
         df = pd.read_sql("""
             SELECT pm.message_uuid, pm.content_original, pm.source_media,
                    pm.matched_terms, pm.relevante_score, pm.relevante_motivo,
-                   pm.created_at
+                   pm.created_at, rm.tweet_id AS video_id
             FROM processed.mensajes pm
+            LEFT JOIN raw.mensajes rm USING (message_uuid)
             WHERE pm.platform = 'youtube'
               AND pm.relevante_llm = 'SI'
               AND pm.message_uuid NOT IN (
@@ -2362,6 +2363,10 @@ def render_anotacion():
     with col_meta:
         medio = msg.get("source_media") or "—"
         st.markdown(f"**Medio:** {medio}")
+        video_id = msg.get("video_id")
+        if video_id and pd.notna(video_id):
+            yt_url = f"https://www.youtube.com/watch?v={video_id}"
+            st.markdown(f"**Video:** [{video_id}]({yt_url})")
         terms = msg.get("matched_terms") or ""
         if terms and pd.notna(terms):
             st.markdown(f"**Términos:** `{terms}`")
