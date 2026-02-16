@@ -537,11 +537,9 @@ def render_sidebar():
             "Términos frecuentes",
             "Dataset Gold",
             "Anotación YouTube",
-            "---",
             "Delitos de odio (oficial)",
         ],
         index=0,
-        format_func=lambda x: x if x != "---" else "──── Datos oficiales ────",
     )
 
     st.sidebar.markdown("---")
@@ -2488,8 +2486,6 @@ def main():
         render_anotacion()
     elif section == "Delitos de odio (oficial)":
         render_delitos()
-    elif section == "---":
-        st.info("Selecciona una sección del menú lateral.")
 
 
 if __name__ == "__main__":
