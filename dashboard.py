@@ -2187,11 +2187,15 @@ def render_anotacion():
 
         if ok:
             st.session_state["ann_skipped"].discard(msg_uuid)
+            for k in ("ann_odio", "ann_cat", "ann_int", "ann_humor"):
+                st.session_state.pop(k, None)
             st.toast("Anotación guardada correctamente", icon="✅")
             st.rerun()
 
     if skipped:
         st.session_state["ann_skipped"].add(msg_uuid)
+        for k in ("ann_odio", "ann_cat", "ann_int", "ann_humor"):
+            st.session_state.pop(k, None)
         st.rerun()
 
 
