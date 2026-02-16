@@ -2380,37 +2380,40 @@ def render_anotacion():
     st.divider()
 
     # --- Clasificación (fuera del form para habilitar/deshabilitar campos) ---
+    # Keys únicas por mensaje para que cada nuevo mensaje arranque limpio
+    k_suffix = msg_uuid[:8]
+
     st.markdown("**Clasificación**")
     odio_choice = st.radio(
         "¿Es discurso de odio?",
         ["Odio", "No Odio", "Dudoso"],
         horizontal=True,
         index=None,
-        key="ann_odio",
+        key=f"ann_odio_{k_suffix}",
     )
 
     es_odio = odio_choice == "Odio"
 
     # --- Formulario con campos condicionales ---
-    with st.form("annotation_form", clear_on_submit=False):
+    with st.form(f"annotation_form_{k_suffix}", clear_on_submit=False):
         if es_odio:
             categoria = st.selectbox(
                 "Categoría de odio",
                 options=list(CATEGORIAS_LABELS.keys()),
                 format_func=lambda x: CATEGORIAS_LABELS.get(x, x),
                 index=None,
-                key="ann_cat",
+                key=f"ann_cat_{k_suffix}",
             )
 
             intensidad = st.select_slider(
                 "Intensidad (1 = baja, 3 = alta)",
                 options=[1, 2, 3],
                 value=2,
-                key="ann_int",
+                key=f"ann_int_{k_suffix}",
             )
 
             humor = st.checkbox(
-                "¿Contiene humor / sarcasmo?", key="ann_humor",
+                "¿Contiene humor / sarcasmo?", key=f"ann_humor_{k_suffix}",
             )
         else:
             categoria = None
@@ -2452,16 +2455,12 @@ def render_anotacion():
 
         if ok:
             st.session_state["ann_skipped"].discard(msg_uuid)
-            for k in ("ann_odio", "ann_cat", "ann_int", "ann_humor"):
-                st.session_state.pop(k, None)
             st.cache_data.clear()
             st.toast("Anotación guardada correctamente", icon="✅")
             st.rerun()
 
     if skipped:
         st.session_state["ann_skipped"].add(msg_uuid)
-        for k in ("ann_odio", "ann_cat", "ann_int", "ann_humor"):
-            st.session_state.pop(k, None)
         st.rerun()
 
 
