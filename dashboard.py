@@ -254,6 +254,28 @@ def load_kpis(
         total_gold = row_g[0] or 0
         total_gold_odio = row_g[1] or 0
 
+        # Registros nuevos hoy (por ingested_at en raw.mensajes)
+        q_new = """
+            SELECT count(*) FILTER (WHERE platform = 'x'),
+                   count(*) FILTER (WHERE platform = 'youtube')
+            FROM raw.mensajes
+            WHERE ingested_at::date = CURRENT_DATE
+        """
+        if platforms:
+            q_new = """
+                SELECT count(*) FILTER (WHERE platform = 'x'),
+                       count(*) FILTER (WHERE platform = 'youtube')
+                FROM raw.mensajes
+                WHERE ingested_at::date = CURRENT_DATE
+                  AND platform IN %s
+            """
+            cur.execute(q_new, [tuple(platforms)])
+        else:
+            cur.execute(q_new)
+        row_new = cur.fetchone()
+        nuevos_x = row_new[0] or 0
+        nuevos_yt = row_new[1] or 0
+
         cur.close()
 
     return {
@@ -266,6 +288,8 @@ def load_kpis(
         "total_medios": total_medios,
         "total_gold": total_gold,
         "total_gold_odio": total_gold_odio,
+        "nuevos_x": nuevos_x,
+        "nuevos_yt": nuevos_yt,
     }
 
 
@@ -593,6 +617,17 @@ def render_panel_general():
         delta=f"{kpis['total_gold_odio']:,} odio",
         delta_color="off",
     )
+
+    st.markdown("---")
+
+    nuevos_total = kpis["nuevos_x"] + kpis["nuevos_yt"]
+    col_n1, col_n2, col_n3 = st.columns(3)
+    col_n1.metric(
+        "Nuevos hoy",
+        f"{nuevos_total:,}",
+    )
+    col_n2.metric("Nuevos X hoy", f"{kpis['nuevos_x']:,}")
+    col_n3.metric("Nuevos YouTube hoy", f"{kpis['nuevos_yt']:,}")
 
     st.markdown("---")
 
