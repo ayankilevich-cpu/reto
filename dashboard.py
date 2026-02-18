@@ -132,8 +132,10 @@ def load_filter_options() -> dict:
         platforms = platforms_raw
 
         medios = pd.read_sql(
-            "SELECT DISTINCT source_media FROM processed.mensajes "
+            "SELECT source_media FROM processed.mensajes "
             "WHERE source_media IS NOT NULL AND source_media != '' "
+            "GROUP BY source_media "
+            "HAVING COUNT(*) >= 100 "
             "ORDER BY source_media", conn
         )["source_media"].tolist()
 
@@ -227,11 +229,14 @@ def load_kpis(
         total_etiquetados_llm = row2[0] or 0
         total_odio_llm = row2[1] or 0
 
-        # medios count
+        # medios count (solo medios reales con >= 100 mensajes)
         cur.execute(
-            f"SELECT count(DISTINCT source_media) FROM processed.mensajes "
-            f"WHERE source_media IS NOT NULL AND source_media != ''"
-            + (f" AND platform IN %s" if platforms else ""),
+            "SELECT count(*) FROM ("
+            "  SELECT source_media FROM processed.mensajes "
+            "  WHERE source_media IS NOT NULL AND source_media != ''"
+            + (f" AND platform IN %s" if platforms else "")
+            + "  GROUP BY source_media HAVING COUNT(*) >= 100"
+            ") sub",
             [tuple(platforms)] if platforms else [],
         )
         total_medios = cur.fetchone()[0]
@@ -406,6 +411,7 @@ def load_ranking_medios(
             LEFT JOIN processed.gold_dataset g USING (message_uuid)
             WHERE {where}
             GROUP BY pm.source_media, pm.platform
+            HAVING COUNT(DISTINCT pm.message_uuid) >= 100
             ORDER BY total_mensajes DESC
         """, conn, params=params)
     return df
