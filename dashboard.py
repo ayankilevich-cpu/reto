@@ -933,68 +933,47 @@ def _prepare_ranking_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _render_ranking_charts(
-    df: pd.DataFrame,
-    col_abs: str,
-    col_pct: str,
-    fuente_label: str,
-    top_n: int,
-    sort_col: str,
-    show_platform_color: bool = False,
-    key_suffix: str = "",
-):
-    """Renderiza los gráficos de volumen y % de odio para un DataFrame de ranking."""
+def _render_ranking_simple(df: pd.DataFrame, top_n: int, key_suffix: str):
+    """Top N medios: volumen y % odio. Sin filtros."""
     if df.empty:
         st.info("No hay datos de medios para esta vista.")
         return
 
-    df_sorted = df.sort_values(sort_col, ascending=False)
-    df_top = df_sorted.head(top_n)
-    chart_height = max(350, top_n * 30)
+    df_vol = df.sort_values("total_mensajes", ascending=False).head(top_n)
+    df_pct = df.sort_values("pct_odio_any", ascending=False).head(top_n)
+    chart_h = max(350, top_n * 30)
 
     col1, col2 = st.columns(2)
 
     with col1:
-        bar_args = dict(
-            data_frame=df_top, x="total_mensajes", y="source_media",
-            orientation="h",
-            labels={"total_mensajes": "Total mensajes", "source_media": "", "plataforma": "Plataforma"},
+        fig1 = px.bar(
+            df_vol, x="total_mensajes", y="source_media", orientation="h",
+            color="total_mensajes", color_continuous_scale="Blues",
+            labels={"total_mensajes": "Total mensajes", "source_media": ""},
             title=f"Top {top_n} medios — Volumen de mensajes",
         )
-        if show_platform_color:
-            bar_args["color"] = "plataforma"
-            bar_args["color_discrete_map"] = {"X": "#1DA1F2", "YouTube": "#FF0000"}
-        else:
-            bar_args["color"] = "total_mensajes"
-            bar_args["color_continuous_scale"] = "Blues"
-        fig = px.bar(**bar_args)
-        fig.update_layout(height=chart_height, yaxis=dict(autorange="reversed"), showlegend=show_platform_color)
-        st.plotly_chart(fig, use_container_width=True, key=f"rm_vol_{key_suffix}")
+        fig1.update_layout(height=chart_h, yaxis=dict(autorange="reversed"), showlegend=False)
+        st.plotly_chart(fig1, use_container_width=True, key=f"rm_vol_{key_suffix}")
 
     with col2:
         fig2 = px.bar(
-            df_top, x=col_pct, y="source_media", orientation="h",
-            color=col_pct, color_continuous_scale="Reds",
-            labels={col_pct: f"% {fuente_label}", "source_media": ""},
-            title=f"Top {top_n} medios — % {fuente_label}",
+            df_pct, x="pct_odio_any", y="source_media", orientation="h",
+            color="pct_odio_any", color_continuous_scale="Reds",
+            labels={"pct_odio_any": "% Odio", "source_media": ""},
+            title=f"Top {top_n} medios — % Odio",
         )
-        fig2.update_layout(height=chart_height, yaxis=dict(autorange="reversed"), showlegend=False)
+        fig2.update_layout(height=chart_h, yaxis=dict(autorange="reversed"), showlegend=False)
         st.plotly_chart(fig2, use_container_width=True, key=f"rm_pct_{key_suffix}")
 
     detail_cols = {
         "source_media": "Medio",
-        "plataforma": "Plataforma",
         "total_mensajes": "Total",
-        "candidatos_dict": "Candidatos (dict)",
-        "odio_baseline": "Odio (Baseline)",
-        "odio_llm": "Odio (LLM)",
-        "odio_gold": "Odio (Gold)",
-        "odio_cualquiera": "Odio (cualquiera)",
+        "odio_cualquiera": "Odio",
         "pct_odio_any": "% Odio",
     }
-    available = [c for c in detail_cols if c in df_top.columns]
+    available = [c for c in detail_cols if c in df_vol.columns]
     st.dataframe(
-        df_top[available].rename(columns=detail_cols),
+        df_vol[available].rename(columns=detail_cols),
         use_container_width=True, hide_index=True,
         key=f"rm_table_{key_suffix}",
     )
@@ -1002,47 +981,10 @@ def _render_ranking_charts(
 
 def render_ranking_medios():
     st.title("Ranking de medios")
-    st.markdown(
-        "Medios de comunicación monitorizados con indicadores de odio "
-        "de todas las fuentes disponibles (diccionario, baseline, LLM, gold humano)."
-    )
+    st.markdown("Top 10 medios de comunicación por volumen de mensajes y porcentaje de odio.")
 
-    # Filtros globales
-    fc1, fc2, fc3 = st.columns(3)
-    fuente_odio = fc1.selectbox(
-        "Fuente de odio",
-        [
-            "Odio (cualquier fuente)",
-            "Candidatos diccionario",
-            "Odio — Baseline",
-            "Odio — LLM",
-            "Odio — Gold (humano)",
-        ],
-        key="rm_fuente",
-    )
-    ordenar_por = fc2.selectbox(
-        "Ordenar por",
-        ["Total mensajes", "Cantidad de odio", "% de odio"],
-        key="rm_order",
-    )
-    top_n = fc3.slider("Top N medios", 5, 20, 10, key="rm_topn")
+    top_n = 10
 
-    fuente_map = {
-        "Odio (cualquier fuente)": ("odio_cualquiera", "pct_odio_any"),
-        "Candidatos diccionario": ("candidatos_dict", "pct_dict"),
-        "Odio — Baseline": ("odio_baseline", "pct_odio_baseline"),
-        "Odio — LLM": ("odio_llm", "pct_odio_llm"),
-        "Odio — Gold (humano)": ("odio_gold", "pct_odio_gold"),
-    }
-    col_abs, col_pct = fuente_map[fuente_odio]
-
-    sort_col = {
-        "Total mensajes": "total_mensajes",
-        "Cantidad de odio": col_abs,
-        "% de odio": col_pct,
-    }[ordenar_por]
-
-    # Cargar datos
     df_all = load_ranking_medios()
     if df_all.empty:
         st.warning("No hay datos de medios.")
@@ -1052,7 +994,7 @@ def render_ranking_medios():
     df_x = df_all[df_all["platform"] == "x"].copy()
     df_yt = df_all[df_all["platform"] == "youtube"].copy()
 
-    # Consolidado: agrupar por source_media sumando conteos
+    # Consolidado
     sum_cols = [
         "total_mensajes", "candidatos_dict", "odio_baseline",
         "odio_llm", "odio_gold", "odio_cualquiera",
@@ -1062,35 +1004,22 @@ def render_ranking_medios():
     df_consol["platform"] = "consolidado"
     df_consol = _prepare_ranking_df(df_consol)
 
-    # Tabs
     tab_all, tab_x, tab_yt = st.tabs(["Consolidado", "X", "YouTube"])
 
     with tab_all:
-        st.markdown("#### Todos los medios (X + YouTube combinados)")
-        _render_ranking_charts(
-            df_consol, col_abs, col_pct, fuente_odio, top_n, sort_col,
-            show_platform_color=False, key_suffix="all",
-        )
+        _render_ranking_simple(df_consol, top_n, "all")
 
     with tab_x:
-        st.markdown("#### Medios en X")
         if df_x.empty:
             st.info("No hay datos de medios en X.")
         else:
-            _render_ranking_charts(
-                df_x, col_abs, col_pct, fuente_odio, top_n, sort_col,
-                show_platform_color=False, key_suffix="x",
-            )
+            _render_ranking_simple(df_x, top_n, "x")
 
     with tab_yt:
-        st.markdown("#### Medios en YouTube")
         if df_yt.empty:
             st.info("No hay datos de medios en YouTube.")
         else:
-            _render_ranking_charts(
-                df_yt, col_abs, col_pct, fuente_odio, top_n, sort_col,
-                show_platform_color=False, key_suffix="yt",
-            )
+            _render_ranking_simple(df_yt, top_n, "yt")
 
 
 def render_comparativa():
