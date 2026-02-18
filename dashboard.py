@@ -944,6 +944,7 @@ def _render_ranking_charts(
     sort_col: str,
     show_platform_color: bool = False,
     key_suffix: str = "",
+    show_intensity: bool = True,
 ):
     """Renderiza los gráficos de volumen y % de odio para un DataFrame de ranking."""
     if df.empty:
@@ -983,8 +984,8 @@ def _render_ranking_charts(
         fig2.update_layout(height=chart_height, yaxis=dict(autorange="reversed"), showlegend=False)
         st.plotly_chart(fig2, use_container_width=True, key=f"rm_pct_{key_suffix}")
 
-    # Gráfico de intensidad promedio — usa el dataset completo (no solo df_top)
-    if "intensidad_promedio" in df.columns and "odio_cualquiera" in df.columns:
+    # Gráfico de intensidad promedio — solo para plataformas con source_media fiable (YouTube)
+    if show_intensity and "intensidad_promedio" in df.columns and "odio_cualquiera" in df.columns:
         df_int_all = df[df["intensidad_promedio"].notna() & (df["intensidad_promedio"] > 0)].copy()
         if not df_int_all.empty:
             max_odio = int(df_int_all["odio_cualquiera"].max())
@@ -1111,7 +1112,7 @@ def render_ranking_medios():
         st.markdown("#### Todos los medios (X + YouTube combinados)")
         _render_ranking_charts(
             df_consol, col_abs, col_pct, fuente_odio, top_n, sort_col,
-            show_platform_color=False, key_suffix="all",
+            show_platform_color=False, key_suffix="all", show_intensity=False,
         )
 
     with tab_x:
@@ -1121,7 +1122,7 @@ def render_ranking_medios():
         else:
             _render_ranking_charts(
                 df_x, col_abs, col_pct, fuente_odio, top_n, sort_col,
-                show_platform_color=False, key_suffix="x",
+                show_platform_color=False, key_suffix="x", show_intensity=False,
             )
 
     with tab_yt:
@@ -1131,7 +1132,7 @@ def render_ranking_medios():
         else:
             _render_ranking_charts(
                 df_yt, col_abs, col_pct, fuente_odio, top_n, sort_col,
-                show_platform_color=False, key_suffix="yt",
+                show_platform_color=False, key_suffix="yt", show_intensity=True,
             )
 
 
