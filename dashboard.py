@@ -983,9 +983,10 @@ def _render_ranking_charts(
         fig2.update_layout(height=chart_height, yaxis=dict(autorange="reversed"), showlegend=False)
         st.plotly_chart(fig2, use_container_width=True, key=f"rm_pct_{key_suffix}")
 
-    # Gráfico de intensidad promedio (solo medios con odio detectado)
-    if "intensidad_promedio" in df_top.columns:
-        df_int = df_top[df_top["intensidad_promedio"].notna() & (df_top["intensidad_promedio"] > 0)].copy()
+    # Gráfico de intensidad promedio — usa el dataset completo (no solo df_top)
+    # para mostrar siempre los medios con mayor intensidad de odio
+    if "intensidad_promedio" in df.columns:
+        df_int = df[df["intensidad_promedio"].notna() & (df["intensidad_promedio"] > 0)].copy()
         if not df_int.empty:
             df_int_sorted = df_int.sort_values("intensidad_promedio", ascending=False).head(top_n)
             fig3 = px.bar(
@@ -994,8 +995,13 @@ def _render_ranking_charts(
                 color="intensidad_promedio",
                 color_continuous_scale="YlOrRd",
                 range_color=[1, 3],
-                labels={"intensidad_promedio": "Intensidad promedio", "source_media": ""},
-                title=f"Top {top_n} medios — Intensidad promedio de odio (1=baja, 3=alta)",
+                labels={
+                    "intensidad_promedio": "Intensidad promedio",
+                    "source_media": "",
+                    "odio_cualquiera": "Msgs odio",
+                },
+                title=f"Top {top_n} — Intensidad promedio de odio (1=baja, 3=alta)",
+                hover_data=["odio_cualquiera", "total_mensajes"],
             )
             fig3.update_layout(
                 height=max(350, min(len(df_int_sorted), top_n) * 30),
@@ -1003,6 +1009,10 @@ def _render_ranking_charts(
                 showlegend=False,
             )
             st.plotly_chart(fig3, use_container_width=True, key=f"rm_int_{key_suffix}")
+            st.caption(
+                "Nota: el ranking de intensidad muestra los medios con mayor intensidad promedio "
+                "de odio, independientemente del ordenamiento principal seleccionado."
+            )
 
     detail_cols = {
         "source_media": "Medio",
