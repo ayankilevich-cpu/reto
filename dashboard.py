@@ -963,7 +963,7 @@ def _render_ranking_charts(
             bar_args["color_continuous_scale"] = "Blues"
         fig = px.bar(**bar_args)
         fig.update_layout(height=chart_height, yaxis=dict(autorange="reversed"), showlegend=show_platform_color)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"rm_vol_{key_suffix}")
 
     with col2:
         fig2 = px.bar(
@@ -973,7 +973,7 @@ def _render_ranking_charts(
             title=f"Top {top_n} medios — % {fuente_label}",
         )
         fig2.update_layout(height=chart_height, yaxis=dict(autorange="reversed"), showlegend=False)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, use_container_width=True, key=f"rm_pct_{key_suffix}")
 
     detail_cols = {
         "source_media": "Medio",
@@ -990,6 +990,7 @@ def _render_ranking_charts(
     st.dataframe(
         df_top[available].rename(columns=detail_cols),
         use_container_width=True, hide_index=True,
+        key=f"rm_table_{key_suffix}",
     )
 
 
