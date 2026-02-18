@@ -399,7 +399,15 @@ def load_ranking_medios(
                       OR e.clasificacion_principal = 'ODIO'
                       OR g.y_odio_bin = 1
                     THEN pm.message_uuid END) AS odio_cualquiera,
-                ROUND(AVG(s.proba_odio)::numeric, 3) AS score_promedio
+                ROUND(AVG(s.proba_odio)::numeric, 3) AS score_promedio,
+                ROUND(AVG(
+                    CASE WHEN g.y_odio_bin = 1 OR e.clasificacion_principal = 'ODIO'
+                         THEN COALESCE(
+                             g.y_intensidad_final::numeric,
+                             NULLIF(e.intensidad_pred, '')::numeric
+                         )
+                    END
+                )::numeric, 2) AS intensidad_promedio
             FROM processed.mensajes pm
             LEFT JOIN processed.scores s USING (message_uuid)
             LEFT JOIN processed.etiquetas_llm e USING (message_uuid)
@@ -975,6 +983,27 @@ def _render_ranking_charts(
         fig2.update_layout(height=chart_height, yaxis=dict(autorange="reversed"), showlegend=False)
         st.plotly_chart(fig2, use_container_width=True, key=f"rm_pct_{key_suffix}")
 
+    # Gráfico de intensidad promedio (solo medios con odio detectado)
+    if "intensidad_promedio" in df_top.columns:
+        df_int = df_top[df_top["intensidad_promedio"].notna() & (df_top["intensidad_promedio"] > 0)].copy()
+        if not df_int.empty:
+            df_int_sorted = df_int.sort_values("intensidad_promedio", ascending=False).head(top_n)
+            fig3 = px.bar(
+                df_int_sorted, x="intensidad_promedio", y="source_media",
+                orientation="h",
+                color="intensidad_promedio",
+                color_continuous_scale="YlOrRd",
+                range_color=[1, 3],
+                labels={"intensidad_promedio": "Intensidad promedio", "source_media": ""},
+                title=f"Top {top_n} medios — Intensidad promedio de odio (1=baja, 3=alta)",
+            )
+            fig3.update_layout(
+                height=max(350, min(len(df_int_sorted), top_n) * 30),
+                yaxis=dict(autorange="reversed"),
+                showlegend=False,
+            )
+            st.plotly_chart(fig3, use_container_width=True, key=f"rm_int_{key_suffix}")
+
     detail_cols = {
         "source_media": "Medio",
         "plataforma": "Plataforma",
@@ -985,6 +1014,7 @@ def _render_ranking_charts(
         "odio_gold": "Odio (Gold)",
         "odio_cualquiera": "Odio (cualquiera)",
         "pct_odio_any": "% Odio",
+        "intensidad_promedio": "Intensidad prom.",
     }
     available = [c for c in detail_cols if c in df_top.columns]
     st.dataframe(
@@ -1016,7 +1046,7 @@ def render_ranking_medios():
     )
     ordenar_por = fc2.selectbox(
         "Ordenar por",
-        ["Total mensajes", "Cantidad de odio", "% de odio"],
+        ["Total mensajes", "Cantidad de odio", "% de odio", "Intensidad promedio"],
         key="rm_order",
     )
     top_n = fc3.slider("Top N medios", 5, 20, 10, key="rm_topn")
@@ -1034,6 +1064,7 @@ def render_ranking_medios():
         "Total mensajes": "total_mensajes",
         "Cantidad de odio": col_abs,
         "% de odio": col_pct,
+        "Intensidad promedio": "intensidad_promedio",
     }[ordenar_por]
 
     # Cargar datos
@@ -1046,12 +1077,15 @@ def render_ranking_medios():
     df_x = df_all[df_all["platform"] == "x"].copy()
     df_yt = df_all[df_all["platform"] == "youtube"].copy()
 
-    # Consolidado: agrupar por source_media sumando ambas plataformas
-    num_cols = [
+    # Consolidado: agrupar por source_media sumando conteos, promediando intensidad
+    sum_cols = [
         "total_mensajes", "candidatos_dict", "odio_baseline",
         "odio_llm", "odio_gold", "odio_cualquiera",
     ]
-    df_consol = df_all.groupby("source_media", as_index=False)[num_cols].sum()
+    agg_dict = {c: "sum" for c in sum_cols}
+    agg_dict["intensidad_promedio"] = "mean"
+    df_consol = df_all.groupby("source_media", as_index=False).agg(agg_dict)
+    df_consol["intensidad_promedio"] = df_consol["intensidad_promedio"].round(2)
     df_consol["platform"] = "consolidado"
     df_consol = _prepare_ranking_df(df_consol)
 
