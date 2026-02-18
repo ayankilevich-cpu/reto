@@ -399,15 +399,7 @@ def load_ranking_medios(
                       OR e.clasificacion_principal = 'ODIO'
                       OR g.y_odio_bin = 1
                     THEN pm.message_uuid END) AS odio_cualquiera,
-                ROUND(AVG(s.proba_odio)::numeric, 3) AS score_promedio,
-                ROUND(AVG(
-                    CASE WHEN g.y_odio_bin = 1 OR e.clasificacion_principal = 'ODIO'
-                         THEN COALESCE(
-                             g.y_intensidad_final::numeric,
-                             NULLIF(e.intensidad_pred, '')::numeric
-                         )
-                    END
-                )::numeric, 2) AS intensidad_promedio
+                ROUND(AVG(s.proba_odio)::numeric, 3) AS score_promedio
             FROM processed.mensajes pm
             LEFT JOIN processed.scores s USING (message_uuid)
             LEFT JOIN processed.etiquetas_llm e USING (message_uuid)
@@ -944,7 +936,6 @@ def _render_ranking_charts(
     sort_col: str,
     show_platform_color: bool = False,
     key_suffix: str = "",
-    show_intensity: bool = True,
 ):
     """Renderiza los gráficos de volumen y % de odio para un DataFrame de ranking."""
     if df.empty:
@@ -984,42 +975,6 @@ def _render_ranking_charts(
         fig2.update_layout(height=chart_height, yaxis=dict(autorange="reversed"), showlegend=False)
         st.plotly_chart(fig2, use_container_width=True, key=f"rm_pct_{key_suffix}")
 
-    # Gráfico de intensidad promedio — solo para plataformas con source_media fiable (YouTube)
-    if show_intensity and "intensidad_promedio" in df.columns and "odio_cualquiera" in df.columns:
-        df_int_all = df[df["intensidad_promedio"].notna() & (df["intensidad_promedio"] > 0)].copy()
-        if not df_int_all.empty:
-            max_odio = int(df_int_all["odio_cualquiera"].max())
-            min_msgs = st.slider(
-                "Mínimo de mensajes de odio para calcular intensidad",
-                1, max(10, min(50, max_odio)), 10,
-                key=f"rm_min_odio_{key_suffix}",
-            )
-            df_int = df_int_all[df_int_all["odio_cualquiera"] >= min_msgs]
-            if df_int.empty:
-                st.info(f"No hay medios con al menos {min_msgs} mensajes de odio.")
-            else:
-                df_int_sorted = df_int.sort_values("intensidad_promedio", ascending=False).head(top_n)
-                fig3 = px.bar(
-                    df_int_sorted, x="intensidad_promedio", y="source_media",
-                    orientation="h",
-                    color="intensidad_promedio",
-                    color_continuous_scale="YlOrRd",
-                    range_color=[1, 3],
-                    labels={
-                        "intensidad_promedio": "Intensidad promedio",
-                        "source_media": "",
-                        "odio_cualquiera": "Msgs odio",
-                    },
-                    title=f"Top {top_n} — Intensidad promedio de odio (mín. {min_msgs} msgs odio)",
-                    hover_data=["odio_cualquiera", "total_mensajes"],
-                )
-                fig3.update_layout(
-                    height=max(350, min(len(df_int_sorted), top_n) * 30),
-                    yaxis=dict(autorange="reversed"),
-                    showlegend=False,
-                )
-                st.plotly_chart(fig3, use_container_width=True, key=f"rm_int_{key_suffix}")
-
     detail_cols = {
         "source_media": "Medio",
         "plataforma": "Plataforma",
@@ -1030,7 +985,6 @@ def _render_ranking_charts(
         "odio_gold": "Odio (Gold)",
         "odio_cualquiera": "Odio (cualquiera)",
         "pct_odio_any": "% Odio",
-        "intensidad_promedio": "Intensidad prom.",
     }
     available = [c for c in detail_cols if c in df_top.columns]
     st.dataframe(
@@ -1062,7 +1016,7 @@ def render_ranking_medios():
     )
     ordenar_por = fc2.selectbox(
         "Ordenar por",
-        ["Total mensajes", "Cantidad de odio", "% de odio", "Intensidad promedio"],
+        ["Total mensajes", "Cantidad de odio", "% de odio"],
         key="rm_order",
     )
     top_n = fc3.slider("Top N medios", 5, 20, 10, key="rm_topn")
@@ -1080,7 +1034,6 @@ def render_ranking_medios():
         "Total mensajes": "total_mensajes",
         "Cantidad de odio": col_abs,
         "% de odio": col_pct,
-        "Intensidad promedio": "intensidad_promedio",
     }[ordenar_por]
 
     # Cargar datos
@@ -1093,15 +1046,13 @@ def render_ranking_medios():
     df_x = df_all[df_all["platform"] == "x"].copy()
     df_yt = df_all[df_all["platform"] == "youtube"].copy()
 
-    # Consolidado: agrupar por source_media sumando conteos, promediando intensidad
+    # Consolidado: agrupar por source_media sumando conteos
     sum_cols = [
         "total_mensajes", "candidatos_dict", "odio_baseline",
         "odio_llm", "odio_gold", "odio_cualquiera",
     ]
     agg_dict = {c: "sum" for c in sum_cols}
-    agg_dict["intensidad_promedio"] = "mean"
     df_consol = df_all.groupby("source_media", as_index=False).agg(agg_dict)
-    df_consol["intensidad_promedio"] = df_consol["intensidad_promedio"].round(2)
     df_consol["platform"] = "consolidado"
     df_consol = _prepare_ranking_df(df_consol)
 
@@ -1112,7 +1063,7 @@ def render_ranking_medios():
         st.markdown("#### Todos los medios (X + YouTube combinados)")
         _render_ranking_charts(
             df_consol, col_abs, col_pct, fuente_odio, top_n, sort_col,
-            show_platform_color=False, key_suffix="all", show_intensity=False,
+            show_platform_color=False, key_suffix="all",
         )
 
     with tab_x:
@@ -1122,7 +1073,7 @@ def render_ranking_medios():
         else:
             _render_ranking_charts(
                 df_x, col_abs, col_pct, fuente_odio, top_n, sort_col,
-                show_platform_color=False, key_suffix="x", show_intensity=False,
+                show_platform_color=False, key_suffix="x",
             )
 
     with tab_yt:
@@ -1132,7 +1083,7 @@ def render_ranking_medios():
         else:
             _render_ranking_charts(
                 df_yt, col_abs, col_pct, fuente_odio, top_n, sort_col,
-                show_platform_color=False, key_suffix="yt", show_intensity=True,
+                show_platform_color=False, key_suffix="yt",
             )
 
 
