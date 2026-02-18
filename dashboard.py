@@ -984,35 +984,40 @@ def _render_ranking_charts(
         st.plotly_chart(fig2, use_container_width=True, key=f"rm_pct_{key_suffix}")
 
     # Gráfico de intensidad promedio — usa el dataset completo (no solo df_top)
-    # para mostrar siempre los medios con mayor intensidad de odio
-    if "intensidad_promedio" in df.columns:
-        df_int = df[df["intensidad_promedio"].notna() & (df["intensidad_promedio"] > 0)].copy()
-        if not df_int.empty:
-            df_int_sorted = df_int.sort_values("intensidad_promedio", ascending=False).head(top_n)
-            fig3 = px.bar(
-                df_int_sorted, x="intensidad_promedio", y="source_media",
-                orientation="h",
-                color="intensidad_promedio",
-                color_continuous_scale="YlOrRd",
-                range_color=[1, 3],
-                labels={
-                    "intensidad_promedio": "Intensidad promedio",
-                    "source_media": "",
-                    "odio_cualquiera": "Msgs odio",
-                },
-                title=f"Top {top_n} — Intensidad promedio de odio (1=baja, 3=alta)",
-                hover_data=["odio_cualquiera", "total_mensajes"],
+    if "intensidad_promedio" in df.columns and "odio_cualquiera" in df.columns:
+        df_int_all = df[df["intensidad_promedio"].notna() & (df["intensidad_promedio"] > 0)].copy()
+        if not df_int_all.empty:
+            max_odio = int(df_int_all["odio_cualquiera"].max())
+            min_msgs = st.slider(
+                "Mínimo de mensajes de odio para calcular intensidad",
+                1, max(10, min(50, max_odio)), 10,
+                key=f"rm_min_odio_{key_suffix}",
             )
-            fig3.update_layout(
-                height=max(350, min(len(df_int_sorted), top_n) * 30),
-                yaxis=dict(autorange="reversed"),
-                showlegend=False,
-            )
-            st.plotly_chart(fig3, use_container_width=True, key=f"rm_int_{key_suffix}")
-            st.caption(
-                "Nota: el ranking de intensidad muestra los medios con mayor intensidad promedio "
-                "de odio, independientemente del ordenamiento principal seleccionado."
-            )
+            df_int = df_int_all[df_int_all["odio_cualquiera"] >= min_msgs]
+            if df_int.empty:
+                st.info(f"No hay medios con al menos {min_msgs} mensajes de odio.")
+            else:
+                df_int_sorted = df_int.sort_values("intensidad_promedio", ascending=False).head(top_n)
+                fig3 = px.bar(
+                    df_int_sorted, x="intensidad_promedio", y="source_media",
+                    orientation="h",
+                    color="intensidad_promedio",
+                    color_continuous_scale="YlOrRd",
+                    range_color=[1, 3],
+                    labels={
+                        "intensidad_promedio": "Intensidad promedio",
+                        "source_media": "",
+                        "odio_cualquiera": "Msgs odio",
+                    },
+                    title=f"Top {top_n} — Intensidad promedio de odio (mín. {min_msgs} msgs odio)",
+                    hover_data=["odio_cualquiera", "total_mensajes"],
+                )
+                fig3.update_layout(
+                    height=max(350, min(len(df_int_sorted), top_n) * 30),
+                    yaxis=dict(autorange="reversed"),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig3, use_container_width=True, key=f"rm_int_{key_suffix}")
 
     detail_cols = {
         "source_media": "Medio",
