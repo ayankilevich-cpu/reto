@@ -1368,8 +1368,8 @@ def render_gold_dataset():
     n_no_odio = (df_f["y_odio_final"] == "No Odio").sum()
     n_dudoso = (df_f["y_odio_final"] == "Dudoso").sum()
     concordancia = df_f["coincide_con_llm"].mean() * 100 if df_f["coincide_con_llm"].notna().any() else 0
-    pct_corr_odio = df_f["corrigio_odio"].mean() * 100
-    pct_corr_cat = df_f["corrigio_categoria"].mean() * 100
+    pct_corr_odio = pd.to_numeric(df_f["corrigio_odio"], errors="coerce").mean() * 100
+    pct_corr_cat = pd.to_numeric(df_f["corrigio_categoria"], errors="coerce").mean() * 100
 
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Total muestras", f"{total:,}")
@@ -1389,8 +1389,8 @@ def render_gold_dataset():
             )
             .reset_index()
         )
-        plat_summary_df["% Odio"] = (plat_summary_df["odio"] / plat_summary_df["total"] * 100).round(1)
-        plat_summary_df["% Corrección"] = (plat_summary_df["corr_odio"] * 100).round(1)
+        plat_summary_df["% Odio"] = (pd.to_numeric(plat_summary_df["odio"], errors="coerce").fillna(0) / plat_summary_df["total"] * 100).round(1)
+        plat_summary_df["% Corrección"] = (pd.to_numeric(plat_summary_df["corr_odio"], errors="coerce").fillna(0) * 100).round(1)
 
         col_p1, col_p2 = st.columns(2)
         with col_p1:
@@ -1516,9 +1516,9 @@ def render_gold_dataset():
         correction_data = pd.DataFrame({
             "Aspecto": ["Clasificación (odio/no)", "Categoría", "Intensidad"],
             "% Corregido": [
-                df_f["corrigio_odio"].mean() * 100,
-                df_f["corrigio_categoria"].mean() * 100,
-                df_f["corrigio_intensidad"].mean() * 100,
+                pd.to_numeric(df_f["corrigio_odio"], errors="coerce").mean() * 100,
+                pd.to_numeric(df_f["corrigio_categoria"], errors="coerce").mean() * 100,
+                pd.to_numeric(df_f["corrigio_intensidad"], errors="coerce").mean() * 100,
             ],
         })
         correction_data["% Coincide"] = 100 - correction_data["% Corregido"]
@@ -1591,9 +1591,9 @@ def render_gold_dataset():
         corr_by_cat["Categoría"] = corr_by_cat["y_categoria_final"].map(
             lambda x: CATEGORIAS_LABELS.get(x, x)
         )
-        corr_by_cat["% Corr. odio"] = (corr_by_cat["corr_odio"] / corr_by_cat["total"] * 100).round(1)
-        corr_by_cat["% Corr. categoría"] = (corr_by_cat["corr_cat"] / corr_by_cat["total"] * 100).round(1)
-        corr_by_cat["% Corr. intensidad"] = (corr_by_cat["corr_int"] / corr_by_cat["total"] * 100).round(1)
+        corr_by_cat["% Corr. odio"] = (pd.to_numeric(corr_by_cat["corr_odio"], errors="coerce").fillna(0) / corr_by_cat["total"] * 100).round(1)
+        corr_by_cat["% Corr. categoría"] = (pd.to_numeric(corr_by_cat["corr_cat"], errors="coerce").fillna(0) / corr_by_cat["total"] * 100).round(1)
+        corr_by_cat["% Corr. intensidad"] = (pd.to_numeric(corr_by_cat["corr_int"], errors="coerce").fillna(0) / corr_by_cat["total"] * 100).round(1)
 
         corr_melted = corr_by_cat.melt(
             id_vars=["Categoría"],
@@ -1638,7 +1638,7 @@ def render_gold_dataset():
             )
             .reset_index()
         )
-        corr_annot["% Corrigió odio"] = (corr_annot["corr_odio"] * 100).round(1)
+        corr_annot["% Corrigió odio"] = (pd.to_numeric(corr_annot["corr_odio"], errors="coerce").fillna(0) * 100).round(1)
 
         fig_corr_annot = px.bar(
             corr_annot, x="annotator_id", y="% Corrigió odio",
