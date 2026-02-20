@@ -67,6 +67,7 @@ CAT_COLORS = [
 # Mapeo de nombres de plataforma para mostrar
 PLATFORM_DISPLAY = {
     "x": "X",
+    "twitter": "X",
     "youtube": "YouTube",
 }
 
@@ -1313,8 +1314,10 @@ def load_gold_full() -> pd.DataFrame:
         """, conn)
     # Etiquetas de plataforma legibles
     df["platform_label"] = df["platform"].map(
-        {"x": "X", "youtube": "YouTube"}
+        {"x": "X", "twitter": "X", "youtube": "YouTube"}
     ).fillna(df["platform"])
+    df["split"] = df["split"].fillna("sin_asignar")
+    df["annotator_id"] = df["annotator_id"].fillna("sin_asignar")
     return df
 
 
