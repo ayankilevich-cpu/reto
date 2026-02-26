@@ -2523,17 +2523,13 @@ def render_footer():
         return
 
     st.markdown("---")
-    st.markdown(
-        "<h5 style='text-align:center; color:#888;'>Instituciones participantes</h5>",
-        unsafe_allow_html=True,
-    )
 
     imgs_html = ""
     for b64, alt in items:
         imgs_html += (
             f'<img src="data:image/png;base64,{b64}" '
             f'alt="{alt}" title="{alt}" '
-            f'style="height:60px; margin:8px 14px; object-fit:contain;">'
+            f'style="height:36px; margin:5px 8px; object-fit:contain;">'
         )
 
     st.markdown(
@@ -2543,8 +2539,8 @@ def render_footer():
             flex-wrap:wrap;
             justify-content:center;
             align-items:center;
-            padding:16px 8px 24px 8px;
-            gap:8px;
+            padding:10px 8px 16px 8px;
+            gap:4px;
         ">
             {imgs_html}
         </div>
