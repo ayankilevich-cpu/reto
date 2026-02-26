@@ -17,6 +17,7 @@ Uso:
 
 from __future__ import annotations
 
+import base64
 import sys
 from collections import Counter
 from pathlib import Path
@@ -2488,6 +2489,71 @@ def render_anotacion():
 
 
 # ============================================================
+# FOOTER – Logos institucionales
+# ============================================================
+_LOGOS_ORDER = [
+    ("01_ciedes.png", "CIEDES"),
+    ("02_cifal.png", "CIFAL Málaga"),
+    ("03_laguajira.png", "La Guajira"),
+    ("04_cppa.png", "Colegio Profesional de Periodistas de Andalucía"),
+    ("05_coe.png", "Comité Olímpico Español"),
+    ("06_mci.png", "Movimiento Contra la Intolerancia"),
+    ("07_eu.png", "Co-funded by the European Union"),
+]
+
+
+def _img_to_base64(path: Path) -> str:
+    return base64.b64encode(path.read_bytes()).decode()
+
+
+def render_footer():
+    """Muestra los logos institucionales en la parte inferior de la app."""
+    logos_dir = Path(__file__).parent / "logos"
+    if not logos_dir.exists():
+        return
+
+    items = []
+    for filename, alt in _LOGOS_ORDER:
+        p = logos_dir / filename
+        if p.exists():
+            b64 = _img_to_base64(p)
+            items.append((b64, alt))
+
+    if not items:
+        return
+
+    st.markdown("---")
+    st.markdown(
+        "<h5 style='text-align:center; color:#888;'>Instituciones participantes</h5>",
+        unsafe_allow_html=True,
+    )
+
+    imgs_html = ""
+    for b64, alt in items:
+        imgs_html += (
+            f'<img src="data:image/png;base64,{b64}" '
+            f'alt="{alt}" title="{alt}" '
+            f'style="height:60px; margin:8px 14px; object-fit:contain;">'
+        )
+
+    st.markdown(
+        f"""
+        <div style="
+            display:flex;
+            flex-wrap:wrap;
+            justify-content:center;
+            align-items:center;
+            padding:16px 8px 24px 8px;
+            gap:8px;
+        ">
+            {imgs_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
 # MAIN
 # ============================================================
 def main():
@@ -2511,6 +2577,8 @@ def main():
         render_anotacion()
     elif section == "Delitos de odio (oficial)":
         render_delitos()
+
+    render_footer()
 
 
 if __name__ == "__main__":
