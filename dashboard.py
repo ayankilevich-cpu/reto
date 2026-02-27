@@ -2196,7 +2196,8 @@ def _load_annotation_queue() -> pd.DataFrame:
 
     with get_conn() as conn:
         df = pd.read_sql("""
-            SELECT pm.message_uuid, pm.content_original, pm.source_media,
+            SELECT DISTINCT ON (pm.content_original)
+                   pm.message_uuid, pm.content_original, pm.source_media,
                    pm.matched_terms, pm.relevante_score, pm.relevante_motivo,
                    pm.created_at, rm.tweet_id AS video_id
             FROM processed.mensajes pm
@@ -2206,9 +2207,9 @@ def _load_annotation_queue() -> pd.DataFrame:
               AND pm.message_uuid NOT IN (
                   SELECT message_uuid FROM processed.validaciones_manuales
               )
-            ORDER BY pm.relevante_score DESC NULLS LAST
-            LIMIT 100
+            ORDER BY pm.content_original, pm.relevante_score DESC NULLS LAST
         """, conn)
+        df = df.sort_values("relevante_score", ascending=False).head(100)
 
     if skipped and not df.empty:
         df = df[~df["message_uuid"].astype(str).isin(skipped)]
@@ -2325,6 +2326,29 @@ def _save_annotation(
             """, (
                 message_uuid, y_odio_final, y_odio_bin,
                 y_categoria, y_intensidad, split_val,
+            ))
+
+            # Anotar también duplicados con mismo contenido
+            cur.execute("""
+                INSERT INTO processed.validaciones_manuales
+                    (message_uuid, odio_flag, categoria_odio, intensidad,
+                     humor_flag, annotator_id, annotation_date)
+                SELECT pm2.message_uuid, %s, %s, %s, %s, %s, %s
+                FROM processed.mensajes pm2
+                WHERE pm2.content_original = (
+                    SELECT content_original FROM processed.mensajes
+                    WHERE message_uuid = %s
+                )
+                  AND pm2.message_uuid != %s
+                  AND pm2.message_uuid NOT IN (
+                      SELECT message_uuid
+                      FROM processed.validaciones_manuales
+                  )
+                ON CONFLICT (message_uuid) DO NOTHING
+            """, (
+                odio_flag, categoria_odio, intensidad,
+                humor_flag, annotator_id, date.today(),
+                message_uuid, message_uuid,
             ))
 
             cur.close()
