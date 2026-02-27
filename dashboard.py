@@ -2418,23 +2418,20 @@ def render_anotacion():
 
     st.divider()
 
-    # --- Formulario completo (todo dentro del form = sin reruns intermedios) ---
-    k_suffix = msg_uuid[:8]
-
-    with st.form(f"ann_form_{k_suffix}", clear_on_submit=True):
+    # --- Formulario completo ---
+    with st.form(key="annotation_form", clear_on_submit=False):
         st.markdown("**Clasificación**")
         odio_choice = st.radio(
             "¿Es discurso de odio?",
             ["Odio", "No Odio", "Dudoso"],
             horizontal=True,
             index=None,
-            key=f"ann_odio_{k_suffix}",
         )
 
         st.markdown("---")
-        st.markdown(
-            "*Completar solo si la clasificación es **Odio** "
-            "(se ignorarán si se selecciona No Odio / Dudoso):*"
+        st.caption(
+            "Completar solo si la clasificación es **Odio** "
+            "(se ignorarán si se selecciona No Odio / Dudoso)."
         )
 
         categoria = st.selectbox(
@@ -2442,20 +2439,15 @@ def render_anotacion():
             options=list(CATEGORIAS_LABELS.keys()),
             format_func=lambda x: CATEGORIAS_LABELS.get(x, x),
             index=None,
-            key=f"ann_cat_{k_suffix}",
         )
 
         intensidad = st.select_slider(
             "Intensidad (1 = baja, 3 = alta)",
             options=[1, 2, 3],
             value=2,
-            key=f"ann_int_{k_suffix}",
         )
 
-        humor = st.checkbox(
-            "¿Contiene humor / sarcasmo?",
-            key=f"ann_humor_{k_suffix}",
-        )
+        humor = st.checkbox("¿Contiene humor / sarcasmo?")
 
         st.markdown("---")
         col_save, col_skip = st.columns(2)
@@ -2494,8 +2486,14 @@ def render_anotacion():
         if ok:
             st.session_state["ann_skipped"].discard(msg_uuid)
             st.cache_data.clear()
-            st.toast("Anotación guardada correctamente", icon="✅")
+            st.success(
+                f"Guardado: {odio_choice} | UUID: {msg_uuid[:8]}..."
+            )
+            import time
+            time.sleep(0.5)
             st.rerun()
+        else:
+            st.error("No se pudo guardar la anotación. Intenta de nuevo.")
 
     if skipped:
         st.session_state["ann_skipped"].add(msg_uuid)
