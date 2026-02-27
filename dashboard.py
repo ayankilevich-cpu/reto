@@ -2604,7 +2604,7 @@ def render_proyecto():
             <h3>Red de Tolerancia contra los delitos de odio</h3>
             <p>
                 ReTo es una iniciativa orientada al análisis, comprensión y prevención
-                del discurso de odio y los delitos de odio en Andalucía. Integra análisis
+                del discurso y los delitos de odio en Andalucía. Integra análisis
                 estructurado de interacciones digitales, etiquetado humano experto,
                 integración con estadísticas oficiales y desarrollo metodológico documentado.
             </p>
