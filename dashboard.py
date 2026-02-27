@@ -2418,63 +2418,69 @@ def render_anotacion():
 
     st.divider()
 
-    # --- Clasificación (fuera del form para habilitar/deshabilitar campos) ---
-    # Keys únicas por mensaje para que cada nuevo mensaje arranque limpio
-    k_suffix = msg_uuid[:8]
+    # --- Clasificación ---
+    # Mantenemos estado del mensaje actual para evitar resets al interactuar
+    if st.session_state.get("_ann_current_uuid") != msg_uuid:
+        st.session_state["_ann_current_uuid"] = msg_uuid
+        st.session_state["_ann_odio"] = None
+        st.session_state["_ann_cat"] = None
+        st.session_state["_ann_int"] = 2
+        st.session_state["_ann_humor"] = False
 
     st.markdown("**Clasificación**")
     odio_choice = st.radio(
         "¿Es discurso de odio?",
         ["Odio", "No Odio", "Dudoso"],
         horizontal=True,
-        index=None,
-        key=f"ann_odio_{k_suffix}",
+        index=(
+            ["Odio", "No Odio", "Dudoso"].index(st.session_state["_ann_odio"])
+            if st.session_state["_ann_odio"] else None
+        ),
+        key=f"ann_odio_{msg_uuid[:8]}",
     )
+    st.session_state["_ann_odio"] = odio_choice
 
-    es_odio = odio_choice == "Odio"
+    categoria = None
+    intensidad = None
+    humor = False
 
-    # --- Formulario con campos condicionales ---
-    with st.form(f"annotation_form_{k_suffix}", clear_on_submit=False):
-        if es_odio:
-            categoria = st.selectbox(
-                "Categoría de odio",
-                options=list(CATEGORIAS_LABELS.keys()),
-                format_func=lambda x: CATEGORIAS_LABELS.get(x, x),
-                index=None,
-                key=f"ann_cat_{k_suffix}",
-            )
+    if odio_choice == "Odio":
+        categoria = st.selectbox(
+            "Categoría de odio",
+            options=list(CATEGORIAS_LABELS.keys()),
+            format_func=lambda x: CATEGORIAS_LABELS.get(x, x),
+            index=None,
+            key=f"ann_cat_{msg_uuid[:8]}",
+        )
 
-            intensidad = st.select_slider(
-                "Intensidad (1 = baja, 3 = alta)",
-                options=[1, 2, 3],
-                value=2,
-                key=f"ann_int_{k_suffix}",
-            )
+        intensidad = st.select_slider(
+            "Intensidad (1 = baja, 3 = alta)",
+            options=[1, 2, 3],
+            value=2,
+            key=f"ann_int_{msg_uuid[:8]}",
+        )
 
-            humor = st.checkbox(
-                "¿Contiene humor / sarcasmo?", key=f"ann_humor_{k_suffix}",
-            )
-        else:
-            categoria = None
-            intensidad = None
-            humor = False
+        humor = st.checkbox(
+            "¿Contiene humor / sarcasmo?",
+            key=f"ann_humor_{msg_uuid[:8]}",
+        )
 
-        st.markdown("---")
-        col_save, col_skip = st.columns(2)
-        submitted = col_save.form_submit_button(
+    st.markdown("---")
+    col_save, col_skip = st.columns(2)
+
+    with col_save:
+        submitted = st.button(
             "Guardar y siguiente", type="primary", use_container_width=True,
         )
-        skipped = col_skip.form_submit_button(
-            "Saltar", use_container_width=True,
-        )
+    with col_skip:
+        skipped = st.button("Saltar", use_container_width=True)
 
-    # --- Procesamiento post-form ---
     if submitted:
         if odio_choice is None:
             st.error("Selecciona una clasificación (Odio / No Odio / Dudoso).")
             return
 
-        if es_odio and not categoria:
+        if odio_choice == "Odio" and not categoria:
             st.error("Si marcas **Odio**, selecciona una categoría.")
             return
 
@@ -2494,12 +2500,14 @@ def render_anotacion():
 
         if ok:
             st.session_state["ann_skipped"].discard(msg_uuid)
+            st.session_state.pop("_ann_current_uuid", None)
             st.cache_data.clear()
             st.toast("Anotación guardada correctamente", icon="✅")
             st.rerun()
 
     if skipped:
         st.session_state["ann_skipped"].add(msg_uuid)
+        st.session_state.pop("_ann_current_uuid", None)
         st.rerun()
 
 
