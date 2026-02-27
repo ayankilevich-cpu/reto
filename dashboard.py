@@ -1882,15 +1882,24 @@ def render_delitos():
     last_year = max(years)
     prev_year = last_year - 1
 
-    # ── Filtro de año ──
+    # ── Filtros con botón "Seleccionar todos" ──
     st.markdown("### Filtros")
+    all_motives = sorted(df_totals["motivo"].unique())
+
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        if st.button("Todos los años", key="btn_all_years"):
+            st.session_state["delitos_years"] = years
+    with col_btn2:
+        if st.button("Todos los motivos", key="btn_all_motives"):
+            st.session_state["delitos_motives"] = all_motives
+
     col_f1, col_f2 = st.columns(2)
     with col_f1:
         selected_years = st.multiselect(
             "Años", years, default=years, key="delitos_years"
         )
     with col_f2:
-        all_motives = sorted(df_totals["motivo"].unique())
         selected_motives = st.multiselect(
             "Motivos de odio", all_motives, default=all_motives, key="delitos_motives"
         )
