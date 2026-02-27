@@ -2418,17 +2418,17 @@ def render_anotacion():
 
     st.divider()
 
-    # --- Formulario completo ---
-    _ANN_WIDGET_KEYS = ["_ann_odio", "_ann_cat", "_ann_int", "_ann_humor"]
+    # --- Formulario (key dinámica por mensaje = reset automático) ---
+    fk = f"ann_{msg_uuid[:12]}"
 
-    with st.form(key="annotation_form", clear_on_submit=False):
+    with st.form(key=fk, clear_on_submit=False):
         st.markdown("**Clasificación**")
         odio_choice = st.radio(
             "¿Es discurso de odio?",
             ["Odio", "No Odio", "Dudoso"],
             horizontal=True,
             index=None,
-            key="_ann_odio",
+            key=f"{fk}_odio",
         )
 
         st.markdown("---")
@@ -2442,17 +2442,19 @@ def render_anotacion():
             options=list(CATEGORIAS_LABELS.keys()),
             format_func=lambda x: CATEGORIAS_LABELS.get(x, x),
             index=None,
-            key="_ann_cat",
+            key=f"{fk}_cat",
         )
 
         intensidad = st.select_slider(
             "Intensidad (1 = baja, 3 = alta)",
             options=[1, 2, 3],
             value=2,
-            key="_ann_int",
+            key=f"{fk}_int",
         )
 
-        humor = st.checkbox("¿Contiene humor / sarcasmo?", key="_ann_humor")
+        humor = st.checkbox(
+            "¿Contiene humor / sarcasmo?", key=f"{fk}_humor",
+        )
 
         st.markdown("---")
         col_save, col_skip = st.columns(2)
@@ -2490,22 +2492,13 @@ def render_anotacion():
 
         if ok:
             st.session_state["ann_skipped"].discard(msg_uuid)
-            for wk in _ANN_WIDGET_KEYS:
-                st.session_state.pop(wk, None)
             st.cache_data.clear()
-            st.success(
-                f"Guardado: {odio_choice} | UUID: {msg_uuid[:8]}..."
-            )
-            import time
-            time.sleep(0.5)
             st.rerun()
         else:
             st.error("No se pudo guardar la anotación. Intenta de nuevo.")
 
     if skipped:
         st.session_state["ann_skipped"].add(msg_uuid)
-        for wk in _ANN_WIDGET_KEYS:
-            st.session_state.pop(wk, None)
         st.rerun()
 
 
