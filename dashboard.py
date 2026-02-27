@@ -561,6 +561,7 @@ def render_sidebar():
     section = st.sidebar.radio(
         "Sección",
         [
+            "Proyecto ReTo",
             "Panel general",
             "Categorías de odio",
             "Ranking de medios",
@@ -2489,6 +2490,164 @@ def render_anotacion():
 
 
 # ============================================================
+# PROYECTO ReTo – Sección institucional
+# ============================================================
+def render_proyecto():
+    st.header("Proyecto ReTo")
+    st.subheader("Red de Tolerancia contra los delitos de odio")
+
+    st.markdown(
+        """
+        ReTo es una iniciativa orientada al **análisis, comprensión y prevención
+        del discurso de odio y los delitos de odio** en Andalucía.
+
+        El proyecto integra análisis estructurado de interacciones digitales,
+        etiquetado humano experto, integración con estadísticas oficiales y
+        desarrollo metodológico documentado.
+
+        La base de datos desarrollada constituye una herramienta técnica de apoyo
+        para organizar, documentar y analizar la información trabajada dentro del
+        proyecto.
+        """
+    )
+
+    st.markdown("---")
+
+    # --- Alcance ---
+    st.subheader("Alcance del Análisis Digital")
+    st.markdown(
+        """
+        El proyecto analiza comentarios publicados por usuarios que interactúan
+        con contenidos de **medios de comunicación andaluces** previamente
+        definidos.
+
+        **Plataformas trabajadas:**
+        - Perfiles oficiales de medios andaluces en **YouTube**
+        - Perfiles oficiales de medios andaluces en **X** (Twitter)
+
+        Solo se analizan comentarios públicos asociados a contenidos publicados
+        por dichos medios. No se accede a información privada ni perfiles
+        cerrados.
+        """
+    )
+
+    st.markdown("---")
+
+    # --- Objetivos ---
+    st.subheader("Objetivos del Análisis")
+    st.markdown(
+        """
+        - Identificar patrones de hostilidad en el debate digital.
+        - Clasificar tipologías de discurso.
+        - Analizar intensidad y target predominante.
+        - Detectar dinámicas recurrentes.
+        - Generar evidencia complementaria a datos oficiales.
+
+        > El proyecto **no** constituye un sistema de vigilancia de usuarios ni
+        > un mecanismo automatizado de denuncia.
+        """
+    )
+
+    st.markdown("---")
+
+    # --- Metodología ---
+    st.subheader("Enfoque Metodológico")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("##### Herramientas Automatizadas")
+        st.markdown(
+            """
+            - Normalización lingüística
+            - Diccionario optimizado
+            - Detección preliminar de términos
+            - Filtrado de volumen
+
+            *Las herramientas automatizadas no determinan la etiqueta final.*
+            """
+        )
+    with col2:
+        st.markdown("##### Etiquetado Humano Experto")
+        st.markdown(
+            """
+            La clasificación final es realizada por anotadores formados
+            según el **Manual ReTo**:
+            - ODIO / NO ODIO / DUDOSO
+            - Categoría
+            - Intensidad
+            - Humor
+
+            *La evaluación humana es el elemento central del proceso.*
+            """
+        )
+    with col3:
+        st.markdown("##### Registro y Trazabilidad")
+        st.markdown(
+            """
+            - Auditoría del etiquetado
+            - Registro de lotes de procesamiento
+            - Anonimización irreversible (hashing)
+            - Documentación completa del flujo
+            """
+        )
+
+    st.markdown("---")
+
+    # --- Flujo visual ---
+    st.subheader("Flujo Metodológico")
+    flow_steps = [
+        ("1", "Captura de Comentarios", "Recolección de datos públicos de YouTube y X"),
+        ("2", "Preprocesamiento", "Normalización + Diccionario + Filtrado"),
+        ("3", "Pre-etiquetado Técnico", "Selección de candidatos"),
+        ("4", "Etiquetado Humano Experto", "ODIO / NO ODIO / DUDOSO + Categoría + Intensidad"),
+        ("5", "Base de Datos", "PostgreSQL + Audit Log"),
+        ("6", "Análisis y Visualización", "Dashboards + Cruce con datos oficiales"),
+    ]
+    flow_html = ""
+    for num, title, desc in flow_steps:
+        flow_html += f"""
+        <div style="
+            display:flex; align-items:center; margin:6px 0;
+        ">
+            <div style="
+                min-width:36px; height:36px; border-radius:50%;
+                background:#1f77b4; color:white; font-weight:bold;
+                display:flex; align-items:center; justify-content:center;
+                font-size:16px;
+            ">{num}</div>
+            <div style="margin-left:12px;">
+                <strong>{title}</strong><br>
+                <span style="color:#666; font-size:0.9em;">{desc}</span>
+            </div>
+        </div>
+        """
+        if num != "6":
+            flow_html += """
+            <div style="margin-left:17px; border-left:2px solid #1f77b4; height:16px;"></div>
+            """
+
+    st.markdown(flow_html, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # --- Principios ---
+    st.subheader("Principios del Proyecto")
+    principles = [
+        ("Rigor metodológico", "Procesos documentados y replicables"),
+        ("Transparencia", "Flujos abiertos y auditables"),
+        ("Protección de datos", "Cumplimiento normativo estricto"),
+        ("Anonimización estricta", "Hashing irreversible de identidades"),
+        ("Complementariedad", "Integración con estadísticas institucionales"),
+        ("Mejora continua", "Iteración permanente del marco analítico"),
+    ]
+    cols = st.columns(3)
+    for idx, (title, desc) in enumerate(principles):
+        with cols[idx % 3]:
+            st.markdown(f"**{title}**")
+            st.caption(desc)
+
+
+# ============================================================
 # FOOTER – Logos institucionales
 # ============================================================
 _LOGOS_ORDER = [
@@ -2555,7 +2714,9 @@ def render_footer():
 def main():
     section = render_sidebar()
 
-    if section == "Panel general":
+    if section == "Proyecto ReTo":
+        render_proyecto()
+    elif section == "Panel general":
         render_panel_general()
     elif section == "Categorías de odio":
         render_categorias()
