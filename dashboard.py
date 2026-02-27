@@ -2357,6 +2357,31 @@ def render_anotacion():
         st.info("Ingresa tu nombre de anotador para comenzar.")
         return
 
+    # === PASO 0: procesar guardado pendiente (antes de renderizar) ===
+    pending_save = st.session_state.pop("_ann_pending_save", None)
+    if pending_save is not None:
+        ok = _save_annotation(**pending_save)
+        if ok:
+            st.session_state["ann_skipped"] = st.session_state.get(
+                "ann_skipped", set()
+            )
+            st.session_state["ann_skipped"].discard(
+                pending_save["message_uuid"]
+            )
+            st.session_state["_ann_last_status"] = (
+                "ok", pending_save["message_uuid"][:8]
+            )
+        else:
+            st.session_state["_ann_last_status"] = ("error", "")
+
+    # Mostrar resultado de la última operación
+    last_status = st.session_state.pop("_ann_last_status", None)
+    if last_status:
+        if last_status[0] == "ok":
+            st.success(f"Anotación guardada ({last_status[1]}...)")
+        else:
+            st.error("Error al guardar la anotación.")
+
     # --- KPIs de progreso ---
     kpis = _load_annotation_kpis(annotator.strip())
     k1, k2, k3, k4 = st.columns(4)
@@ -2418,8 +2443,10 @@ def render_anotacion():
 
     st.divider()
 
-    # --- Formulario (key dinámica por mensaje = reset automático) ---
-    fk = f"ann_{msg_uuid[:12]}"
+    # --- Formulario ---
+    # Contador incremental para forzar form key nuevo tras cada save/skip
+    form_seq = st.session_state.get("_ann_form_seq", 0)
+    fk = f"ann_form_{form_seq}"
 
     with st.form(key=fk, clear_on_submit=False):
         st.markdown("**Clasificación**")
@@ -2465,6 +2492,7 @@ def render_anotacion():
             "Saltar", use_container_width=True,
         )
 
+    # --- Procesar acciones del formulario ---
     if submitted:
         if odio_choice is None:
             st.error("Selecciona una clasificación (Odio / No Odio / Dudoso).")
@@ -2481,24 +2509,21 @@ def render_anotacion():
             else (False if odio_choice == "No Odio" else None)
         )
 
-        ok = _save_annotation(
-            message_uuid=msg_uuid,
-            odio_flag=odio_flag,
-            categoria_odio=categoria if es_odio else None,
-            intensidad=intensidad if es_odio else None,
-            humor_flag=humor if es_odio else False,
-            annotator_id=annotator.strip(),
-        )
-
-        if ok:
-            st.session_state["ann_skipped"].discard(msg_uuid)
-            st.cache_data.clear()
-            st.rerun()
-        else:
-            st.error("No se pudo guardar la anotación. Intenta de nuevo.")
+        # Encolar guardado para el próximo render (patrón robusto)
+        st.session_state["_ann_pending_save"] = {
+            "message_uuid": msg_uuid,
+            "odio_flag": odio_flag,
+            "categoria_odio": categoria if es_odio else None,
+            "intensidad": intensidad if es_odio else None,
+            "humor_flag": humor if es_odio else False,
+            "annotator_id": annotator.strip(),
+        }
+        st.session_state["_ann_form_seq"] = form_seq + 1
+        st.rerun()
 
     if skipped:
         st.session_state["ann_skipped"].add(msg_uuid)
+        st.session_state["_ann_form_seq"] = form_seq + 1
         st.rerun()
 
 
