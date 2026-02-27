@@ -1907,26 +1907,31 @@ def render_delitos():
         df_solved["year"].isin(selected_years) & df_solved["motivo"].isin(selected_motives)
     ]
 
-    # ── 1. KPIs ──
+    # ── 1. KPIs (dinámicos según filtros) ──
     st.markdown("---")
     st.markdown("### Indicadores clave")
 
-    total_last = df_totals[df_totals["year"] == last_year]["crimes_total"].sum()
-    total_prev = df_totals[df_totals["year"] == prev_year]["crimes_total"].sum()
-    solved_last = df_solved[df_solved["year"] == last_year]["crimes_solved"].sum()
-    variation = ((total_last - total_prev) / total_prev * 100) if total_prev else 0
-    solve_rate = (solved_last / total_last * 100) if total_last else 0
+    kpi_year = max(selected_years)
+    kpi_prev = kpi_year - 1
+
+    df_kpi = df_totals[df_totals["motivo"].isin(selected_motives)]
+    total_kpi = df_kpi[df_kpi["year"] == kpi_year]["crimes_total"].sum()
+    total_kpi_prev = df_kpi[df_kpi["year"] == kpi_prev]["crimes_total"].sum()
+    solved_kpi = df_solved[
+        (df_solved["year"] == kpi_year) & df_solved["motivo"].isin(selected_motives)
+    ]["crimes_solved"].sum()
+    variation = ((total_kpi - total_kpi_prev) / total_kpi_prev * 100) if total_kpi_prev else 0
+    solve_rate = (solved_kpi / total_kpi * 100) if total_kpi else 0
+    df_kpi_yr = df_kpi[df_kpi["year"] == kpi_year]
     top_motive = (
-        df_totals[df_totals["year"] == last_year]
-        .sort_values("crimes_total", ascending=False)
-        .iloc[0]["motivo"]
-        if not df_totals[df_totals["year"] == last_year].empty else "N/A"
+        df_kpi_yr.sort_values("crimes_total", ascending=False).iloc[0]["motivo"]
+        if not df_kpi_yr.empty else "N/A"
     )
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric(f"Total delitos ({last_year})", f"{total_last:,}")
-    k2.metric("Variación interanual", f"{variation:+.1f}%")
-    k3.metric("Tasa esclarecimiento", f"{solve_rate:.1f}%")
+    k1.metric(f"Total delitos ({kpi_year})", f"{total_kpi:,}")
+    k2.metric(f"Var. vs {kpi_prev}", f"{variation:+.1f}%")
+    k3.metric(f"Esclarecimiento ({kpi_year})", f"{solve_rate:.1f}%")
     k4.metric("Motivo principal", top_motive)
 
     # ── 2. Evolución temporal ──
