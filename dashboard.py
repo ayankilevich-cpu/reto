@@ -2492,146 +2492,278 @@ def render_anotacion():
 # ============================================================
 # PROYECTO ReTo – Sección institucional
 # ============================================================
+_CARD_CSS = """
+<style>
+.reto-hero {
+    background: linear-gradient(135deg, #1a3a5c 0%, #2b6cb0 100%);
+    color: white;
+    padding: 2.5rem 2rem;
+    border-radius: 12px;
+    margin-bottom: 1.5rem;
+}
+.reto-hero h1 { color: white; margin: 0 0 0.3rem 0; font-size: 2.2rem; }
+.reto-hero h3 { color: #bee3f8; margin: 0 0 1.2rem 0; font-weight: 400; }
+.reto-hero p  { color: #e2e8f0; font-size: 1.05rem; line-height: 1.6; margin: 0; }
+
+.reto-card {
+    background: #f7fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 1.4rem 1.5rem;
+    height: 100%;
+}
+.reto-card h4 {
+    color: #2b6cb0;
+    margin: 0 0 0.8rem 0;
+    font-size: 1.05rem;
+    border-bottom: 2px solid #bee3f8;
+    padding-bottom: 0.5rem;
+}
+.reto-card ul { padding-left: 1.2rem; margin: 0; }
+.reto-card li { color: #4a5568; margin-bottom: 0.3rem; font-size: 0.95rem; }
+.reto-card .card-note {
+    color: #718096;
+    font-style: italic;
+    font-size: 0.85rem;
+    margin-top: 0.8rem;
+}
+
+.reto-flow {
+    background: #f7fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 1.5rem 2rem;
+    margin-bottom: 1rem;
+}
+.reto-flow-step {
+    display: flex;
+    align-items: flex-start;
+}
+.reto-flow-left {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 44px;
+}
+.reto-flow-num {
+    width: 38px; height: 38px; border-radius: 50%;
+    background: linear-gradient(135deg, #2b6cb0, #3182ce);
+    color: white; font-weight: 700; font-size: 15px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 6px rgba(43,108,176,0.3);
+    flex-shrink: 0;
+}
+.reto-flow-line {
+    width: 2px; height: 22px;
+    background: linear-gradient(180deg, #3182ce, #bee3f8);
+    margin: 0;
+}
+.reto-flow-text {
+    margin-left: 14px;
+    padding-top: 4px;
+}
+.reto-flow-text strong { color: #2d3748; font-size: 0.98rem; }
+.reto-flow-text span  { color: #718096; font-size: 0.88rem; }
+
+.reto-principle {
+    text-align: center;
+    padding: 1rem 0.8rem;
+    background: #f7fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    height: 100%;
+}
+.reto-principle .p-icon {
+    font-size: 1.6rem;
+    margin-bottom: 0.4rem;
+}
+.reto-principle strong { color: #2b6cb0; font-size: 0.95rem; }
+.reto-principle p { color: #718096; font-size: 0.82rem; margin: 0.3rem 0 0 0; }
+
+.reto-alert {
+    background: #ebf8ff;
+    border-left: 4px solid #3182ce;
+    padding: 0.8rem 1.2rem;
+    border-radius: 0 8px 8px 0;
+    color: #2c5282;
+    font-size: 0.95rem;
+    margin-top: 0.5rem;
+}
+</style>
+"""
+
+
 def render_proyecto():
-    st.header("Proyecto ReTo")
-    st.subheader("Red de Tolerancia contra los delitos de odio")
+    st.markdown(_CARD_CSS, unsafe_allow_html=True)
 
+    # --- Hero ---
     st.markdown(
         """
-        ReTo es una iniciativa orientada al **análisis, comprensión y prevención
-        del discurso de odio y los delitos de odio** en Andalucía.
-
-        El proyecto integra análisis estructurado de interacciones digitales,
-        etiquetado humano experto, integración con estadísticas oficiales y
-        desarrollo metodológico documentado.
-
-        La base de datos desarrollada constituye una herramienta técnica de apoyo
-        para organizar, documentar y analizar la información trabajada dentro del
-        proyecto.
-        """
+        <div class="reto-hero">
+            <h1>Proyecto ReTo</h1>
+            <h3>Red de Tolerancia contra los delitos de odio</h3>
+            <p>
+                ReTo es una iniciativa orientada al análisis, comprensión y prevención
+                del discurso de odio y los delitos de odio en Andalucía. Integra análisis
+                estructurado de interacciones digitales, etiquetado humano experto,
+                integración con estadísticas oficiales y desarrollo metodológico documentado.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    st.markdown("---")
+    # --- Alcance y Objetivos lado a lado ---
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(
+            """
+            <div class="reto-card">
+                <h4>Alcance del Análisis Digital</h4>
+                <p style="color:#4a5568; font-size:0.95rem; margin:0 0 0.6rem 0;">
+                    Comentarios públicos de usuarios en contenidos de medios de
+                    comunicación andaluces previamente definidos.
+                </p>
+                <ul>
+                    <li>Perfiles oficiales de medios andaluces en <strong>YouTube</strong></li>
+                    <li>Perfiles oficiales de medios andaluces en <strong>X</strong> (Twitter)</li>
+                </ul>
+                <div class="card-note">
+                    No se accede a información privada ni perfiles cerrados.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            """
+            <div class="reto-card">
+                <h4>Objetivos del Análisis</h4>
+                <ul>
+                    <li>Identificar patrones de hostilidad en el debate digital</li>
+                    <li>Clasificar tipologías de discurso</li>
+                    <li>Analizar intensidad y target predominante</li>
+                    <li>Detectar dinámicas recurrentes</li>
+                    <li>Generar evidencia complementaria a datos oficiales</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    # --- Alcance ---
-    st.subheader("Alcance del Análisis Digital")
     st.markdown(
-        """
-        El proyecto analiza comentarios publicados por usuarios que interactúan
-        con contenidos de **medios de comunicación andaluces** previamente
-        definidos.
-
-        **Plataformas trabajadas:**
-        - Perfiles oficiales de medios andaluces en **YouTube**
-        - Perfiles oficiales de medios andaluces en **X** (Twitter)
-
-        Solo se analizan comentarios públicos asociados a contenidos publicados
-        por dichos medios. No se accede a información privada ni perfiles
-        cerrados.
-        """
+        '<div class="reto-alert">'
+        "Este proyecto <strong>no</strong> constituye un sistema de vigilancia "
+        "de usuarios ni un mecanismo automatizado de denuncia."
+        "</div>",
+        unsafe_allow_html=True,
     )
 
-    st.markdown("---")
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    # --- Objetivos ---
-    st.subheader("Objetivos del Análisis")
+    # --- Metodología en 3 cards ---
     st.markdown(
-        """
-        - Identificar patrones de hostilidad en el debate digital.
-        - Clasificar tipologías de discurso.
-        - Analizar intensidad y target predominante.
-        - Detectar dinámicas recurrentes.
-        - Generar evidencia complementaria a datos oficiales.
-
-        > El proyecto **no** constituye un sistema de vigilancia de usuarios ni
-        > un mecanismo automatizado de denuncia.
-        """
+        "<h3 style='color:#2b6cb0; margin-bottom:0.8rem;'>Enfoque Metodológico</h3>",
+        unsafe_allow_html=True,
     )
-
-    st.markdown("---")
-
-    # --- Metodología ---
-    st.subheader("Enfoque Metodológico")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("##### Herramientas Automatizadas")
+    m1, m2, m3 = st.columns(3)
+    with m1:
         st.markdown(
             """
-            - Normalización lingüística
-            - Diccionario optimizado
-            - Detección preliminar de términos
-            - Filtrado de volumen
-
-            *Las herramientas automatizadas no determinan la etiqueta final.*
-            """
+            <div class="reto-card">
+                <h4>Herramientas Automatizadas</h4>
+                <ul>
+                    <li>Normalización lingüística</li>
+                    <li>Diccionario optimizado</li>
+                    <li>Detección preliminar de términos</li>
+                    <li>Filtrado de volumen</li>
+                </ul>
+                <div class="card-note">
+                    Las herramientas automatizadas no determinan la etiqueta final.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
-    with col2:
-        st.markdown("##### Etiquetado Humano Experto")
+    with m2:
         st.markdown(
             """
-            La clasificación final es realizada por anotadores formados
-            según el **Manual ReTo**:
-            - ODIO / NO ODIO / DUDOSO
-            - Categoría
-            - Intensidad
-            - Humor
-
-            *La evaluación humana es el elemento central del proceso.*
-            """
+            <div class="reto-card">
+                <h4>Etiquetado Humano Experto</h4>
+                <p style="color:#4a5568; font-size:0.93rem; margin:0 0 0.5rem 0;">
+                    Clasificación final por anotadores formados (Manual ReTo):
+                </p>
+                <ul>
+                    <li>ODIO / NO ODIO / DUDOSO</li>
+                    <li>Categoría</li>
+                    <li>Intensidad</li>
+                    <li>Humor</li>
+                </ul>
+                <div class="card-note">
+                    La evaluación humana es el elemento central del proceso.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
-    with col3:
-        st.markdown("##### Registro y Trazabilidad")
+    with m3:
         st.markdown(
             """
-            - Auditoría del etiquetado
-            - Registro de lotes de procesamiento
-            - Anonimización irreversible (hashing)
-            - Documentación completa del flujo
-            """
+            <div class="reto-card">
+                <h4>Registro y Trazabilidad</h4>
+                <ul>
+                    <li>Auditoría del etiquetado</li>
+                    <li>Registro de lotes de procesamiento</li>
+                    <li>Anonimización irreversible (hashing)</li>
+                    <li>Documentación completa del flujo técnico</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-    st.markdown("---")
+    st.markdown("<br>", unsafe_allow_html=True)
 
     # --- Flujo visual ---
-    st.subheader("Flujo Metodológico")
+    st.markdown(
+        "<h3 style='color:#2b6cb0; margin-bottom:0.8rem;'>Flujo Metodológico</h3>",
+        unsafe_allow_html=True,
+    )
     flow_steps = [
         ("1", "Captura de Comentarios", "Recolección de datos públicos de YouTube y X"),
-        ("2", "Preprocesamiento", "Normalización + Diccionario + Filtrado"),
+        ("2", "Preprocesamiento Automatizado", "Normalización + Diccionario + Filtrado"),
         ("3", "Pre-etiquetado Técnico", "Selección de candidatos"),
         ("4", "Etiquetado Humano Experto", "ODIO / NO ODIO / DUDOSO + Categoría + Intensidad"),
-        ("5", "Base de Datos", "PostgreSQL + Audit Log"),
+        ("5", "Integración en Base de Datos", "PostgreSQL + Audit Log"),
         ("6", "Análisis y Visualización", "Dashboards + Cruce con datos oficiales"),
     ]
-    flow_html = ""
-    for num, title, desc in flow_steps:
-        flow_html += f"""
-        <div style="
-            display:flex; align-items:center; margin:6px 0;
-        ">
-            <div style="
-                min-width:36px; height:36px; border-radius:50%;
-                background:#1f77b4; color:white; font-weight:bold;
-                display:flex; align-items:center; justify-content:center;
-                font-size:16px;
-            ">{num}</div>
-            <div style="margin-left:12px;">
-                <strong>{title}</strong><br>
-                <span style="color:#666; font-size:0.9em;">{desc}</span>
-            </div>
-        </div>
-        """
-        if num != "6":
-            flow_html += """
-            <div style="margin-left:17px; border-left:2px solid #1f77b4; height:16px;"></div>
-            """
-
+    flow_html = '<div class="reto-flow">'
+    for i, (num, title, desc) in enumerate(flow_steps):
+        flow_html += (
+            '<div class="reto-flow-step">'
+            '<div class="reto-flow-left">'
+            f'<div class="reto-flow-num">{num}</div>'
+        )
+        if i < len(flow_steps) - 1:
+            flow_html += '<div class="reto-flow-line">&nbsp;</div>'
+        flow_html += (
+            "</div>"
+            '<div class="reto-flow-text">'
+            f"<strong>{title}</strong><br>"
+            f"<span>{desc}</span>"
+            "</div></div>"
+        )
+    flow_html += "</div>"
     st.markdown(flow_html, unsafe_allow_html=True)
 
-    st.markdown("---")
+    st.markdown("<br>", unsafe_allow_html=True)
 
     # --- Principios ---
-    st.subheader("Principios del Proyecto")
+    st.markdown(
+        "<h3 style='color:#2b6cb0; margin-bottom:0.8rem;'>Principios del Proyecto</h3>",
+        unsafe_allow_html=True,
+    )
     principles = [
         ("Rigor metodológico", "Procesos documentados y replicables"),
         ("Transparencia", "Flujos abiertos y auditables"),
@@ -2640,11 +2772,18 @@ def render_proyecto():
         ("Complementariedad", "Integración con estadísticas institucionales"),
         ("Mejora continua", "Iteración permanente del marco analítico"),
     ]
-    cols = st.columns(3)
+    p_cols = st.columns(3)
     for idx, (title, desc) in enumerate(principles):
-        with cols[idx % 3]:
-            st.markdown(f"**{title}**")
-            st.caption(desc)
+        with p_cols[idx % 3]:
+            st.markdown(
+                f"""
+                <div class="reto-principle">
+                    <strong>{title}</strong>
+                    <p>{desc}</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
 
 # ============================================================
