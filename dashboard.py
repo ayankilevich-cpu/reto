@@ -539,6 +539,7 @@ def load_terminos(
     medios: Optional[Tuple] = None,
     categorias: Optional[Tuple] = None,
     solo_candidatos: bool = True,
+    ultimas_horas: Optional[int] = None,
 ) -> pd.DataFrame:
     platforms = list(platforms) if platforms else None
     medios = list(medios) if medios else None
@@ -557,6 +558,9 @@ def load_terminos(
     if categorias:
         conds.append("e.categoria_odio_pred IN %s"); params.append(tuple(categorias))
         need_llm_join = True
+    if ultimas_horas:
+        conds.append("pm.created_at >= NOW() - INTERVAL '%s hours'")
+        params.append(ultimas_horas)
 
     where = " AND ".join(conds)
     join_clause = "INNER JOIN processed.etiquetas_llm e USING (message_uuid)" if need_llm_join else ""
@@ -1244,7 +1248,7 @@ def render_terminos():
 
     opts = load_filter_options()
 
-    fc1, fc2, fc3, fc4 = st.columns(4)
+    fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1, 1, 1])
     sel_platforms = fc1.multiselect(
         "Plataforma", opts["platforms"], default=[], key="term_plat",
         format_func=platform_label,
@@ -1258,13 +1262,18 @@ def render_terminos():
         format_func=lambda x: CATEGORIAS_LABELS.get(x, x),
         default=[], key="term_cat",
     )
-    solo_candidatos = fc4.checkbox("Solo candidatos a odio", value=True, key="term_cand")
+    PERIODO_OPTIONS = {"Todo": None, "24 hs": 24, "48 hs": 48, "72 hs": 72}
+    sel_periodo = fc4.selectbox(
+        "Período", options=list(PERIODO_OPTIONS.keys()), index=0, key="term_periodo",
+    )
+    solo_candidatos = fc5.checkbox("Solo candidatos a odio", value=True, key="term_cand")
 
     df = load_terminos(
         platforms=tuple(sel_platforms) if sel_platforms else None,
         medios=tuple(sel_medios) if sel_medios else None,
         categorias=tuple(sel_cats) if sel_cats else None,
         solo_candidatos=solo_candidatos,
+        ultimas_horas=PERIODO_OPTIONS[sel_periodo],
     )
 
     if df.empty:
