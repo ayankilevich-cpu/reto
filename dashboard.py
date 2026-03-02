@@ -301,6 +301,29 @@ def load_kpis(
 
 
 @st.cache_data(ttl=300)
+def load_llm_stats() -> dict:
+    """Total de mensajes procesados por LLM y agregados en la última actualización."""
+    with get_conn() as conn:
+        row = pd.read_sql("""
+            SELECT
+                COUNT(*)                                           AS total_procesados,
+                MAX(etiquetado_date::date)                         AS ultima_fecha,
+                COUNT(*) FILTER (
+                    WHERE etiquetado_date::date = (
+                        SELECT MAX(etiquetado_date::date)
+                        FROM processed.etiquetas_llm
+                    )
+                )                                                  AS agregados_ultima
+            FROM processed.etiquetas_llm
+        """, conn).iloc[0]
+    return {
+        "total_procesados": int(row["total_procesados"]),
+        "ultima_fecha": row["ultima_fecha"],
+        "agregados_ultima": int(row["agregados_ultima"]),
+    }
+
+
+@st.cache_data(ttl=300)
 def load_categorias(
     platforms: Optional[Tuple] = None,
     medios: Optional[Tuple] = None,
@@ -843,6 +866,19 @@ def _load_panel_combined(
 def render_categorias():
     st.title("Distribución por categoría de odio")
     st.markdown("Clasificación del LLM en las 6 categorías del proyecto ReTo.")
+
+    llm_stats = load_llm_stats()
+    kc1, kc2, kc3 = st.columns(3)
+    kc1.metric("Total mensajes procesados", f"{llm_stats['total_procesados']:,}")
+    kc2.metric(
+        "Agregados en última actualización",
+        f"{llm_stats['agregados_ultima']:,}",
+    )
+    kc3.metric(
+        "Última actualización",
+        llm_stats["ultima_fecha"].strftime("%d/%m/%Y") if llm_stats["ultima_fecha"] else "—",
+    )
+    st.markdown("---")
 
     opts = load_filter_options()
 
