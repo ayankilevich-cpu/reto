@@ -1786,6 +1786,160 @@ ART510_COLORS = {
     "1c": "#F39C12",
 }
 
+# ── Prompt y lógica de evaluación LLM Art. 510 ──
+
+_ART510_SYSTEM = (
+    "Eres un analista jurídico especializado en delitos de odio del Código "
+    "Penal español. Tu tarea es evaluar si un mensaje de redes sociales "
+    "constituye potencialmente un delito conforme al artículo 510, apartado 1 "
+    "del Código Penal. Devuelves SOLO JSON válido, sin texto extra."
+)
+
+_ART510_USER_TMPL = """Analiza el siguiente mensaje y determina si podría constituir un delito según el artículo 510.1 del Código Penal español.
+
+ARTÍCULO 510.1 — Conductas tipificadas (SOLO evaluar estas):
+
+a) Fomentar, promover o incitar directa o indirectamente al odio, hostilidad, discriminación o violencia contra un grupo o persona por razón de su pertenencia a un grupo protegido.
+
+b) Producir, elaborar, poseer con finalidad de distribuir, facilitar el acceso, distribuir, difundir o vender escritos o material idóneo para fomentar, promover o incitar al odio, hostilidad, discriminación o violencia contra grupos protegidos.
+
+c) Negar, trivializar gravemente o enaltecer los delitos de genocidio, de lesa humanidad o contra personas y bienes protegidos en caso de conflicto armado, o enaltecer a sus autores, cuando se promueva o favorezca un clima de violencia, hostilidad, odio o discriminación.
+
+GRUPOS PROTEGIDOS (Art. 510): raza, antisemitismo, antigitanismo, ideología, religión, creencias, situación familiar, etnia, nación, origen nacional, sexo, orientación sexual, identidad sexual, género, aporofobia, enfermedad, discapacidad.
+
+IMPORTANTE: NO evaluar bajo el apartado 2 del Art. 510 (lesiones a la dignidad por humillación, menosprecio o descrédito). Solo el apartado 1.
+
+Devuelve SOLO un JSON válido con EXACTAMENTE estas claves:
+- es_potencial_delito: true o false
+- apartado_510: "1a", "1b" o "1c" (vacío si no es delito)
+- grupo_protegido: el grupo protegido específico afectado (vacío si no es delito)
+- conducta_detectada: descripción breve de la conducta tipificada (vacío si no es delito)
+- justificacion: 1-2 frases breves explicando tu razonamiento
+- confianza: "alta", "media" o "baja"
+
+MENSAJE:
+{txt}
+"""
+
+_ART510_APARTADOS_VALIDOS = {"1a", "1b", "1c"}
+_ART510_CONFIANZA_VALIDOS = {"alta", "media", "baja"}
+
+
+def _art510_extract_json(text: str) -> dict:
+    """Extrae JSON del output del LLM de forma robusta."""
+    import json as _json
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = t.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
+    t = t.translate({
+        ord("\u201C"): ord('"'), ord("\u201D"): ord('"'),
+        ord("\u2018"): ord("'"), ord("\u2019"): ord("'"),
+    })
+    if not t.startswith("{"):
+        a, b = t.find("{"), t.rfind("}")
+        if a != -1 and b != -1 and b > a:
+            t = t[a:b + 1]
+    return _json.loads(t)
+
+
+def _art510_eval_single(client, model: str, txt: str) -> dict:
+    """Evalúa un mensaje bajo Art. 510.1 y devuelve dict normalizado."""
+    for attempt in range(2):
+        user_content = _ART510_USER_TMPL.format(txt=txt)
+        if attempt > 0:
+            user_content = "IMPORTANTE: devolvé SOLO JSON válido. Sin texto extra.\n\n" + user_content
+
+        resp = client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": _ART510_SYSTEM},
+                {"role": "user", "content": user_content},
+            ],
+        )
+        raw = getattr(resp, "output_text", "") or ""
+        try:
+            obj = _art510_extract_json(raw)
+            break
+        except Exception:
+            if attempt == 1:
+                obj = {
+                    "es_potencial_delito": False,
+                    "apartado_510": "", "grupo_protegido": "",
+                    "conducta_detectada": "",
+                    "justificacion": "Error de parseo JSON",
+                    "confianza": "baja",
+                }
+
+    es_delito = str(obj.get("es_potencial_delito", False)).lower() in ("true", "1", "si", "sí", "yes")
+    apartado = str(obj.get("apartado_510", "")).strip().lower()
+    if apartado not in _ART510_APARTADOS_VALIDOS:
+        apartado = ""
+    confianza = str(obj.get("confianza", "baja")).strip().lower()
+    if confianza not in _ART510_CONFIANZA_VALIDOS:
+        confianza = "baja"
+
+    return {
+        "es_potencial_delito": es_delito,
+        "apartado_510": apartado if es_delito else "",
+        "grupo_protegido": str(obj.get("grupo_protegido", "")).strip() if es_delito else "",
+        "conducta_detectada": str(obj.get("conducta_detectada", "")).strip() if es_delito else "",
+        "justificacion": str(obj.get("justificacion", "")).strip(),
+        "confianza": confianza,
+    }
+
+
+def _art510_get_already_evaluated() -> set:
+    """Devuelve el set de claves 'uuid|label_source' ya evaluadas en BD."""
+    try:
+        with get_conn() as conn:
+            df = pd.read_sql(
+                "SELECT message_uuid, label_source FROM processed.evaluacion_art510",
+                conn,
+            )
+        return set(df["message_uuid"].astype(str) + "|" + df["label_source"].astype(str))
+    except Exception:
+        return set()
+
+
+def _art510_ensure_tables():
+    """Crea las tablas Art. 510 si no existen."""
+    ddl_path = Path(__file__).parent / "create_tables_art510.sql"
+    if ddl_path.exists():
+        try:
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(ddl_path.read_text(encoding="utf-8"))
+                cur.close()
+        except Exception:
+            pass
+
+
+def _art510_save_batch(results: list):
+    """Guarda un lote de resultados en processed.evaluacion_art510."""
+    if not results:
+        return
+    columns = [
+        "message_uuid", "label_source", "es_potencial_delito", "apartado_510",
+        "grupo_protegido", "conducta_detectada", "justificacion", "confianza",
+        "llm_version",
+    ]
+    rows = []
+    for r in results:
+        rows.append((
+            r["message_uuid"], r["label_source"], r["es_potencial_delito"],
+            r["apartado_510"] or None, r["grupo_protegido"] or None,
+            r["conducta_detectada"] or None, r["justificacion"] or None,
+            r["confianza"] or None, "v1",
+        ))
+    with get_conn() as conn:
+        from db_utils import upsert_rows as _upsert
+        _upsert(
+            conn, "processed.evaluacion_art510", columns, rows,
+            conflict_columns=["message_uuid", "label_source"],
+            update_columns=[c for c in columns if c not in ("message_uuid", "label_source")],
+        )
+
+
 # Categorías del etiquetado que mapean a grupos protegidos Art. 510
 CATEGORIAS_ART510 = {
     "odio_etnico_cultural_religioso",
@@ -1987,11 +2141,9 @@ def load_art510_candidates(
 def _render_art510_preview(sel_platforms, sel_sources):
     """Vista previa de candidatos Art. 510 basada en datos existentes."""
     st.info(
-        "**Modo vista previa** — Aún no se ha ejecutado `evaluar_art510.py`. "
-        "Se muestran mensajes etiquetados como ODIO cuyas categorías "
-        "corresponden a grupos protegidos del Art. 510.1. "
-        "Para obtener la evaluación jurídica completa (apartado, conducta, "
-        "confianza), ejecuta el script de evaluación."
+        "**Modo vista previa** — Se muestran mensajes etiquetados como ODIO "
+        "cuyas categorías corresponden a grupos protegidos del Art. 510.1. "
+        "Usa el botón de abajo para ejecutar la evaluación jurídica con LLM."
     )
 
     df = load_art510_candidates(
@@ -2113,6 +2265,139 @@ def _render_art510_preview(sel_platforms, sel_sources):
     }
     df_display = df[display_cols].rename(columns=rename_map)
     st.dataframe(df_display, use_container_width=True, hide_index=True, height=500)
+
+    # ── Ejecutar evaluación LLM ──
+    st.markdown("---")
+    st.markdown("### Ejecutar evaluación Art. 510.1")
+
+    already_done = _art510_get_already_evaluated()
+    pending = []
+    for _, r in df.iterrows():
+        key = f"{r['message_uuid']}|{r['label_source']}"
+        if key not in already_done:
+            pending.append(r)
+
+    total_pending = len(pending)
+    total_already = len(already_done)
+
+    if total_already > 0:
+        st.caption(f"Ya evaluados previamente: {total_already:,} (en caché)")
+
+    if total_pending == 0 and total_already > 0:
+        st.success("Todos los candidatos ya fueron evaluados. Recarga la página para ver los resultados.")
+        if st.button("Recargar datos", key="art510_reload"):
+            st.cache_data.clear()
+            st.rerun()
+        return
+
+    if total_pending == 0:
+        st.warning("No hay candidatos para evaluar.")
+        return
+
+    st.markdown(f"**{total_pending:,}** mensajes pendientes de evaluación jurídica.")
+
+    import os as _os
+    api_key = _os.environ.get("OPENAI_API_KEY") or ""
+    try:
+        api_key = api_key or st.secrets.get("openai", {}).get("api_key", "")
+    except Exception:
+        pass
+
+    if not api_key:
+        api_key = st.text_input(
+            "OpenAI API Key",
+            type="password",
+            placeholder="sk-...",
+            key="art510_api_key",
+            help="Necesaria para evaluar con LLM. No se almacena.",
+        )
+
+    model = _os.environ.get("OPENAI_MODEL", "gpt-5.2")
+
+    col_limit, col_model = st.columns(2)
+    with col_limit:
+        max_eval = st.number_input(
+            "Máx. mensajes a evaluar",
+            min_value=1,
+            max_value=total_pending,
+            value=min(50, total_pending),
+            step=10,
+            key="art510_max_eval",
+            help="Limita la cantidad para controlar el coste de API.",
+        )
+    with col_model:
+        st.text_input(
+            "Modelo",
+            value=model,
+            disabled=True,
+            key="art510_model_display",
+        )
+
+    if not api_key:
+        st.warning("Introduce tu API key de OpenAI para continuar.")
+        return
+
+    if st.button(
+        f"Evaluar {max_eval} mensajes bajo Art. 510.1",
+        type="primary",
+        key="art510_run_eval",
+    ):
+        _art510_ensure_tables()
+
+        from openai import OpenAI as _OpenAI
+        client = _OpenAI(api_key=api_key)
+
+        batch_to_process = pending[:max_eval]
+        results = []
+        n_delitos = 0
+
+        progress = st.progress(0, text="Iniciando evaluación...")
+        status = st.empty()
+
+        for i, r in enumerate(batch_to_process):
+            txt = str(r.get("content_original", "")).strip()
+            if txt:
+                evaluation = _art510_eval_single(client, model, txt)
+            else:
+                evaluation = {
+                    "es_potencial_delito": False, "apartado_510": "",
+                    "grupo_protegido": "", "conducta_detectada": "",
+                    "justificacion": "Texto vacío", "confianza": "baja",
+                }
+
+            result = {
+                "message_uuid": str(r["message_uuid"]),
+                "label_source": str(r["label_source"]),
+                **evaluation,
+            }
+            results.append(result)
+
+            if evaluation["es_potencial_delito"]:
+                n_delitos += 1
+
+            pct = (i + 1) / len(batch_to_process)
+            progress.progress(pct, text=f"Evaluando {i+1}/{len(batch_to_process)}...")
+
+            # Guardar en lotes de 10
+            if len(results) % 10 == 0:
+                _art510_save_batch(results[-10:])
+                status.caption(f"Guardados {len(results):,} | Potenciales delitos: {n_delitos}")
+
+        # Guardar remanentes
+        remainder = len(results) % 10
+        if remainder > 0:
+            _art510_save_batch(results[-remainder:])
+
+        progress.progress(1.0, text="Evaluación completada")
+        st.success(
+            f"Evaluación completada: {len(results):,} mensajes procesados, "
+            f"{n_delitos:,} potenciales delitos detectados."
+        )
+        st.cache_data.clear()
+        st.balloons()
+
+        if st.button("Ver resultados", key="art510_see_results"):
+            st.rerun()
 
 
 def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
@@ -2278,6 +2563,78 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
             }
             df_display = df_delitos[display_cols].rename(columns=rename_map)
             st.dataframe(df_display, use_container_width=True, hide_index=True, height=500)
+
+    # ── Evaluar nuevos mensajes (expander discreto) ──
+    already_done = _art510_get_already_evaluated()
+    df_all_candidates = load_art510_candidates()
+    new_pending = []
+    if not df_all_candidates.empty:
+        for _, r in df_all_candidates.iterrows():
+            key = f"{r['message_uuid']}|{r['label_source']}"
+            if key not in already_done:
+                new_pending.append(r)
+
+    if new_pending:
+        st.markdown("---")
+        with st.expander(f"Evaluar {len(new_pending):,} nuevos mensajes pendientes"):
+            import os as _os
+            api_key = _os.environ.get("OPENAI_API_KEY") or ""
+            try:
+                api_key = api_key or st.secrets.get("openai", {}).get("api_key", "")
+            except Exception:
+                pass
+
+            if not api_key:
+                api_key = st.text_input(
+                    "OpenAI API Key", type="password",
+                    placeholder="sk-...", key="art510_full_api_key",
+                )
+
+            model = _os.environ.get("OPENAI_MODEL", "gpt-5.2")
+            max_eval = st.number_input(
+                "Máx. mensajes", min_value=1,
+                max_value=len(new_pending),
+                value=min(50, len(new_pending)),
+                step=10, key="art510_full_max",
+            )
+
+            if api_key and st.button(
+                f"Evaluar {max_eval} nuevos mensajes",
+                type="primary", key="art510_full_run",
+            ):
+                from openai import OpenAI as _OpenAI
+                client = _OpenAI(api_key=api_key)
+                batch = new_pending[:max_eval]
+                results = []
+                n_delitos = 0
+                progress = st.progress(0, text="Evaluando...")
+
+                for i, r in enumerate(batch):
+                    txt = str(r.get("content_original", "")).strip()
+                    if txt:
+                        ev = _art510_eval_single(client, model, txt)
+                    else:
+                        ev = {
+                            "es_potencial_delito": False, "apartado_510": "",
+                            "grupo_protegido": "", "conducta_detectada": "",
+                            "justificacion": "Texto vacío", "confianza": "baja",
+                        }
+                    results.append({"message_uuid": str(r["message_uuid"]),
+                                    "label_source": str(r["label_source"]), **ev})
+                    if ev["es_potencial_delito"]:
+                        n_delitos += 1
+                    progress.progress((i + 1) / len(batch),
+                                      text=f"Evaluando {i+1}/{len(batch)}...")
+                    if len(results) % 10 == 0:
+                        _art510_save_batch(results[-10:])
+
+                remainder = len(results) % 10
+                if remainder > 0:
+                    _art510_save_batch(results[-remainder:])
+
+                progress.progress(1.0, text="Completado")
+                st.success(f"{len(results):,} evaluados, {n_delitos:,} potenciales delitos.")
+                st.cache_data.clear()
 
 
 def render_analisis_art510():
