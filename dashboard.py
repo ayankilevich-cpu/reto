@@ -2297,22 +2297,25 @@ def _render_art510_preview(sel_platforms, sel_sources):
     st.markdown(f"**{total_pending:,}** mensajes pendientes de evaluación jurídica.")
 
     import os as _os
-    api_key = _os.environ.get("OPENAI_API_KEY") or ""
+    api_key = (_os.environ.get("OPENAI_API_KEY") or "").strip()
     try:
-        api_key = api_key or st.secrets.get("openai", {}).get("api_key", "")
+        api_key = api_key or (st.secrets.get("openai", {}).get("api_key", "") or "").strip()
     except Exception:
         pass
+    # Limpiar caracteres no-ASCII que rompen httpx
+    api_key = api_key.encode("ascii", errors="ignore").decode("ascii").strip()
 
     if not api_key:
-        api_key = st.text_input(
+        api_key_input = st.text_input(
             "OpenAI API Key",
             type="password",
             placeholder="sk-...",
             key="art510_api_key",
             help="Necesaria para evaluar con LLM. No se almacena.",
         )
+        api_key = (api_key_input or "").encode("ascii", errors="ignore").decode("ascii").strip()
 
-    model = _os.environ.get("OPENAI_MODEL", "gpt-5.2")
+    model = (_os.environ.get("OPENAI_MODEL") or "gpt-4o").strip()
 
     col_limit, col_model = st.columns(2)
     with col_limit:
@@ -2585,19 +2588,21 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
         st.markdown("---")
         with st.expander(f"Evaluar {len(new_pending):,} nuevos mensajes pendientes"):
             import os as _os
-            api_key = _os.environ.get("OPENAI_API_KEY") or ""
+            api_key = (_os.environ.get("OPENAI_API_KEY") or "").strip()
             try:
-                api_key = api_key or st.secrets.get("openai", {}).get("api_key", "")
+                api_key = api_key or (st.secrets.get("openai", {}).get("api_key", "") or "").strip()
             except Exception:
                 pass
+            api_key = api_key.encode("ascii", errors="ignore").decode("ascii").strip()
 
             if not api_key:
-                api_key = st.text_input(
+                api_key_input = st.text_input(
                     "OpenAI API Key", type="password",
                     placeholder="sk-...", key="art510_full_api_key",
                 )
+                api_key = (api_key_input or "").encode("ascii", errors="ignore").decode("ascii").strip()
 
-            model = _os.environ.get("OPENAI_MODEL", "gpt-5.2")
+            model = (_os.environ.get("OPENAI_MODEL") or "gpt-4o").strip()
             max_eval = st.number_input(
                 "Máx. mensajes", min_value=1,
                 max_value=len(new_pending),
