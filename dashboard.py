@@ -1769,6 +1769,51 @@ def render_gold_dataset():
 # SECCIÓN: ANÁLISIS ART. 510 — Potenciales delitos de odio
 # ============================================================
 
+
+def _clean_api_key(raw: str) -> str:
+    """Elimina caracteres invisibles/non-ASCII de una API key."""
+    return (raw or "").encode("ascii", errors="ignore").decode("ascii").strip()
+
+
+def _get_openai_api_key() -> str:
+    """Intenta obtener la API key de OpenAI desde múltiples fuentes."""
+    import os as _os
+
+    # 1. Variable de entorno directa
+    key = (_os.environ.get("OPENAI_API_KEY") or "").strip()
+    if key:
+        return _clean_api_key(key)
+
+    # 2. st.secrets — probar múltiples formatos
+    try:
+        # Formato: [openai] \n api_key = "sk-..."
+        sec = st.secrets.get("openai", {})
+        if hasattr(sec, "get"):
+            key = (sec.get("api_key") or sec.get("API_KEY") or "").strip()
+            if key:
+                return _clean_api_key(key)
+    except Exception:
+        pass
+
+    try:
+        # Formato top-level: OPENAI_API_KEY = "sk-..."
+        key = (st.secrets.get("OPENAI_API_KEY") or "").strip()
+        if key:
+            return _clean_api_key(key)
+    except Exception:
+        pass
+
+    try:
+        # Acceso directo (Streamlit Cloud a veces lo requiere)
+        key = st.secrets["OPENAI_API_KEY"]
+        if key:
+            return _clean_api_key(str(key))
+    except Exception:
+        pass
+
+    return ""
+
+
 APARTADO_LABELS = {
     "1a": "Art. 510.1a — Incitación",
     "1b": "Art. 510.1b — Distribución material",
@@ -1843,19 +1888,40 @@ def _art510_extract_json(text: str) -> dict:
 
 
 def _art510_eval_single(client, model: str, txt: str) -> dict:
-    """Evalúa un mensaje bajo Art. 510.1 y devuelve dict normalizado."""
+    """Evalúa un mensaje bajo Art. 510.1 y devuelve dict normalizado.
+
+    Raises:
+        openai.AuthenticationError (re-raised to stop the batch).
+    """
+    _fallback = {
+        "es_potencial_delito": False, "apartado_510": "",
+        "grupo_protegido": "", "conducta_detectada": "",
+        "justificacion": "Error en la evaluación", "confianza": "baja",
+    }
+
     for attempt in range(2):
         user_content = _ART510_USER_TMPL.format(txt=txt)
         if attempt > 0:
             user_content = "IMPORTANTE: devolvé SOLO JSON válido. Sin texto extra.\n\n" + user_content
 
-        resp = client.responses.create(
-            model=model,
-            input=[
-                {"role": "system", "content": _ART510_SYSTEM},
-                {"role": "user", "content": user_content},
-            ],
-        )
+        try:
+            resp = client.responses.create(
+                model=model,
+                input=[
+                    {"role": "system", "content": _ART510_SYSTEM},
+                    {"role": "user", "content": user_content},
+                ],
+            )
+        except Exception as api_err:
+            err_name = type(api_err).__name__
+            if "AuthenticationError" in err_name or "PermissionDenied" in err_name:
+                raise
+            if attempt == 1:
+                _fallback["justificacion"] = f"Error API: {err_name}"
+                obj = _fallback
+                break
+            continue
+
         raw = getattr(resp, "output_text", "") or ""
         try:
             obj = _art510_extract_json(raw)
@@ -2296,14 +2362,7 @@ def _render_art510_preview(sel_platforms, sel_sources):
 
     st.markdown(f"**{total_pending:,}** mensajes pendientes de evaluación jurídica.")
 
-    import os as _os
-    api_key = (_os.environ.get("OPENAI_API_KEY") or "").strip()
-    try:
-        api_key = api_key or (st.secrets.get("openai", {}).get("api_key", "") or "").strip()
-    except Exception:
-        pass
-    # Limpiar caracteres no-ASCII que rompen httpx
-    api_key = api_key.encode("ascii", errors="ignore").decode("ascii").strip()
+    api_key = _get_openai_api_key()
 
     if not api_key:
         api_key_input = st.text_input(
@@ -2313,8 +2372,9 @@ def _render_art510_preview(sel_platforms, sel_sources):
             key="art510_api_key",
             help="Necesaria para evaluar con LLM. No se almacena.",
         )
-        api_key = (api_key_input or "").encode("ascii", errors="ignore").decode("ascii").strip()
+        api_key = _clean_api_key(api_key_input)
 
+    import os as _os
     model = (_os.environ.get("OPENAI_MODEL") or "gpt-4o").strip()
 
     col_limit, col_model = st.columns(2)
@@ -2357,6 +2417,13 @@ def _render_art510_preview(sel_platforms, sel_sources):
             return
         client = _OpenAI(api_key=api_key)
 
+        # Verificar API key antes de procesar todo el lote
+        try:
+            client.models.list()
+        except Exception as e:
+            st.error(f"Error de autenticación con OpenAI: {type(e).__name__}. Verifica tu API key.")
+            return
+
         batch_to_process = pending[:max_eval]
         results = []
         n_delitos = 0
@@ -2364,36 +2431,44 @@ def _render_art510_preview(sel_platforms, sel_sources):
         progress = st.progress(0, text="Iniciando evaluación...")
         status = st.empty()
 
-        for i, r in enumerate(batch_to_process):
-            txt = str(r.get("content_original", "")).strip()
-            if txt:
-                evaluation = _art510_eval_single(client, model, txt)
-            else:
-                evaluation = {
-                    "es_potencial_delito": False, "apartado_510": "",
-                    "grupo_protegido": "", "conducta_detectada": "",
-                    "justificacion": "Texto vacío", "confianza": "baja",
+        try:
+            for i, r in enumerate(batch_to_process):
+                txt = str(r.get("content_original", "")).strip()
+                if txt:
+                    evaluation = _art510_eval_single(client, model, txt)
+                else:
+                    evaluation = {
+                        "es_potencial_delito": False, "apartado_510": "",
+                        "grupo_protegido": "", "conducta_detectada": "",
+                        "justificacion": "Texto vacío", "confianza": "baja",
+                    }
+
+                result = {
+                    "message_uuid": str(r["message_uuid"]),
+                    "label_source": str(r["label_source"]),
+                    **evaluation,
                 }
+                results.append(result)
 
-            result = {
-                "message_uuid": str(r["message_uuid"]),
-                "label_source": str(r["label_source"]),
-                **evaluation,
-            }
-            results.append(result)
+                if evaluation["es_potencial_delito"]:
+                    n_delitos += 1
 
-            if evaluation["es_potencial_delito"]:
-                n_delitos += 1
+                pct = (i + 1) / len(batch_to_process)
+                progress.progress(pct, text=f"Evaluando {i+1}/{len(batch_to_process)}...")
 
-            pct = (i + 1) / len(batch_to_process)
-            progress.progress(pct, text=f"Evaluando {i+1}/{len(batch_to_process)}...")
+                if len(results) % 10 == 0:
+                    _art510_save_batch(results[-10:])
+                    status.caption(f"Guardados {len(results):,} | Potenciales delitos: {n_delitos}")
 
-            # Guardar en lotes de 10
-            if len(results) % 10 == 0:
-                _art510_save_batch(results[-10:])
-                status.caption(f"Guardados {len(results):,} | Potenciales delitos: {n_delitos}")
+        except Exception as e:
+            st.error(f"Error durante la evaluación: {type(e).__name__} — {e}")
+            # Guardar lo que se haya procesado hasta ahora
+            if results:
+                _art510_save_batch(results)
+                st.warning(f"Se guardaron {len(results):,} evaluaciones procesadas antes del error.")
+                st.cache_data.clear()
+            return
 
-        # Guardar remanentes
         remainder = len(results) % 10
         if remainder > 0:
             _art510_save_batch(results[-remainder:])
@@ -2587,21 +2662,16 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
     if new_pending:
         st.markdown("---")
         with st.expander(f"Evaluar {len(new_pending):,} nuevos mensajes pendientes"):
-            import os as _os
-            api_key = (_os.environ.get("OPENAI_API_KEY") or "").strip()
-            try:
-                api_key = api_key or (st.secrets.get("openai", {}).get("api_key", "") or "").strip()
-            except Exception:
-                pass
-            api_key = api_key.encode("ascii", errors="ignore").decode("ascii").strip()
+            api_key = _get_openai_api_key()
 
             if not api_key:
                 api_key_input = st.text_input(
                     "OpenAI API Key", type="password",
                     placeholder="sk-...", key="art510_full_api_key",
                 )
-                api_key = (api_key_input or "").encode("ascii", errors="ignore").decode("ascii").strip()
+                api_key = _clean_api_key(api_key_input)
 
+            import os as _os
             model = (_os.environ.get("OPENAI_MODEL") or "gpt-4o").strip()
             max_eval = st.number_input(
                 "Máx. mensajes", min_value=1,
@@ -2623,29 +2693,44 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
                     )
                     return
                 client = _OpenAI(api_key=api_key)
+
+                try:
+                    client.models.list()
+                except Exception as e:
+                    st.error(f"Error de autenticación: {type(e).__name__}. Verifica tu API key.")
+                    return
+
                 batch = new_pending[:max_eval]
                 results = []
                 n_delitos = 0
                 progress = st.progress(0, text="Evaluando...")
 
-                for i, r in enumerate(batch):
-                    txt = str(r.get("content_original", "")).strip()
-                    if txt:
-                        ev = _art510_eval_single(client, model, txt)
-                    else:
-                        ev = {
-                            "es_potencial_delito": False, "apartado_510": "",
-                            "grupo_protegido": "", "conducta_detectada": "",
-                            "justificacion": "Texto vacío", "confianza": "baja",
-                        }
-                    results.append({"message_uuid": str(r["message_uuid"]),
-                                    "label_source": str(r["label_source"]), **ev})
-                    if ev["es_potencial_delito"]:
-                        n_delitos += 1
-                    progress.progress((i + 1) / len(batch),
-                                      text=f"Evaluando {i+1}/{len(batch)}...")
-                    if len(results) % 10 == 0:
-                        _art510_save_batch(results[-10:])
+                try:
+                    for i, r in enumerate(batch):
+                        txt = str(r.get("content_original", "")).strip()
+                        if txt:
+                            ev = _art510_eval_single(client, model, txt)
+                        else:
+                            ev = {
+                                "es_potencial_delito": False, "apartado_510": "",
+                                "grupo_protegido": "", "conducta_detectada": "",
+                                "justificacion": "Texto vacío", "confianza": "baja",
+                            }
+                        results.append({"message_uuid": str(r["message_uuid"]),
+                                        "label_source": str(r["label_source"]), **ev})
+                        if ev["es_potencial_delito"]:
+                            n_delitos += 1
+                        progress.progress((i + 1) / len(batch),
+                                          text=f"Evaluando {i+1}/{len(batch)}...")
+                        if len(results) % 10 == 0:
+                            _art510_save_batch(results[-10:])
+                except Exception as e:
+                    st.error(f"Error: {type(e).__name__} — {e}")
+                    if results:
+                        _art510_save_batch(results)
+                        st.warning(f"Guardados {len(results):,} antes del error.")
+                        st.cache_data.clear()
+                    return
 
                 remainder = len(results) % 10
                 if remainder > 0:
