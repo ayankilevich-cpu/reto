@@ -1779,23 +1779,26 @@ def _get_openai_api_key() -> str:
     """Intenta obtener la API key de OpenAI desde múltiples fuentes."""
     import os as _os
 
-    # 1. st.secrets — acceso directo (top-level: OPENAI_API_KEY = "sk-...")
-    try:
-        key = str(st.secrets["OPENAI_API_KEY"])
-        if key:
-            return _clean_api_key(key)
-    except Exception:
-        pass
+    # Probar todas las variantes posibles en st.secrets
+    for key_name in ("OPENAI_API_KEY", "openai_api_key", "api_key"):
+        try:
+            key = str(st.secrets[key_name])
+            if key and key.startswith("sk"):
+                return _clean_api_key(key)
+        except Exception:
+            pass
 
-    # 2. st.secrets — formato sección: [openai] api_key = "sk-..."
-    try:
-        key = str(st.secrets["openai"]["api_key"])
-        if key:
-            return _clean_api_key(key)
-    except Exception:
-        pass
+    # Probar secciones en st.secrets
+    for section in ("openai", "OPENAI"):
+        for sub_key in ("api_key", "API_KEY", "OPENAI_API_KEY"):
+            try:
+                key = str(st.secrets[section][sub_key])
+                if key and key.startswith("sk"):
+                    return _clean_api_key(key)
+            except Exception:
+                pass
 
-    # 3. Variable de entorno
+    # Variable de entorno
     key = (_os.environ.get("OPENAI_API_KEY") or "").strip()
     if key:
         return _clean_api_key(key)
@@ -1958,15 +1961,40 @@ def _art510_get_already_evaluated() -> set:
 
 def _art510_ensure_tables():
     """Crea las tablas Art. 510 si no existen."""
-    ddl_path = Path(__file__).parent / "create_tables_art510.sql"
-    if ddl_path.exists():
-        try:
-            with get_conn() as conn:
-                cur = conn.cursor()
-                cur.execute(ddl_path.read_text(encoding="utf-8"))
-                cur.close()
-        except Exception:
-            pass
+    ddl = """
+    CREATE TABLE IF NOT EXISTS processed.evaluacion_art510 (
+        message_uuid        UUID        NOT NULL,
+        label_source        VARCHAR(20) NOT NULL,
+        es_potencial_delito BOOLEAN     NOT NULL,
+        apartado_510        VARCHAR(5),
+        grupo_protegido     VARCHAR(100),
+        conducta_detectada  VARCHAR(100),
+        justificacion       TEXT,
+        confianza           VARCHAR(10),
+        evaluacion_date     TIMESTAMPTZ DEFAULT NOW(),
+        llm_version         VARCHAR(50) DEFAULT 'v1',
+        PRIMARY KEY (message_uuid, label_source)
+    );
+    CREATE TABLE IF NOT EXISTS processed.validacion_art510_humana (
+        message_uuid            UUID        NOT NULL,
+        label_source            VARCHAR(20) NOT NULL,
+        validacion_humana       VARCHAR(20) NOT NULL,
+        apartado_510_final      VARCHAR(5),
+        grupo_protegido_final   VARCHAR(100),
+        conducta_final          VARCHAR(100),
+        comentario              TEXT,
+        annotator_id            VARCHAR(50) NOT NULL,
+        annotation_date         DATE        NOT NULL,
+        PRIMARY KEY (message_uuid, label_source)
+    );
+    """
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(ddl)
+            cur.close()
+    except Exception as e:
+        st.error(f"Error creando tablas Art. 510: {e}")
 
 
 def _art510_save_batch(results: list):
@@ -2353,13 +2381,18 @@ def _render_art510_preview(sel_platforms, sel_sources):
 
     api_key = _get_openai_api_key()
 
-    if not api_key:
+    if api_key:
+        st.caption(f"API key detectada (***{api_key[-4:]})")
+    else:
+        st.warning(
+            "No se encontró la API key en secrets. "
+            "Configúrala en Streamlit Cloud: Settings > Secrets > `OPENAI_API_KEY = \"sk-...\"`"
+        )
         api_key_input = st.text_input(
-            "OpenAI API Key",
+            "O introdúcela aquí:",
             type="password",
             placeholder="sk-...",
             key="art510_api_key",
-            help="Necesaria para evaluar con LLM. No se almacena.",
         )
         api_key = _clean_api_key(api_key_input)
 
@@ -2732,6 +2765,9 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
 
 def render_analisis_art510():
     """Sección 7: Análisis de mensajes bajo el Art. 510.1 del Código Penal."""
+    # Asegurar que las tablas existan antes de cualquier consulta
+    _art510_ensure_tables()
+
     st.header("Análisis Art. 510 — Potenciales delitos de odio")
     st.caption(
         "Evaluación de mensajes etiquetados como odio bajo el criterio del "
