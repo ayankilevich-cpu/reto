@@ -10,6 +10,7 @@ Secciones:
   4. Comparativa baseline vs LLM
   5. Calidad del etiquetado LLM
   6. Términos de odio más frecuentes
+  7. Análisis Art. 510 — Potenciales delitos de odio
 
 Uso:
   streamlit run dashboard.py
@@ -596,7 +597,8 @@ def render_sidebar():
             "Calidad LLM",
             "Términos frecuentes",
             "Dataset Gold",
-            "Anotación YouTube",
+            "Análisis Art. 510",
+            "Anotación y validación",
             "Delitos de odio (oficial)",
         ],
         index=0,
@@ -1764,6 +1766,352 @@ def render_gold_dataset():
 
 
 # ============================================================
+# SECCIÓN: ANÁLISIS ART. 510 — Potenciales delitos de odio
+# ============================================================
+
+APARTADO_LABELS = {
+    "1a": "Art. 510.1a — Incitación",
+    "1b": "Art. 510.1b — Distribución material",
+    "1c": "Art. 510.1c — Negación/trivialización",
+}
+
+LABEL_SOURCE_LABELS = {
+    "llm": "Etiquetado LLM",
+    "humano": "Etiquetado humano",
+}
+
+ART510_COLORS = {
+    "1a": "#E74C3C",
+    "1b": "#3498DB",
+    "1c": "#F39C12",
+}
+
+
+@st.cache_data(ttl=300)
+def load_art510_data(
+    platforms: Optional[Tuple] = None,
+    label_sources: Optional[Tuple] = None,
+    solo_delitos: bool = True,
+) -> pd.DataFrame:
+    """Carga datos de evaluación Art. 510 con filtros."""
+    conditions = []
+    params: list = []
+
+    if solo_delitos:
+        conditions.append("ea.es_potencial_delito = TRUE")
+
+    if platforms:
+        conditions.append("pm.platform IN %s")
+        params.append(tuple(platforms))
+
+    if label_sources:
+        conditions.append("ea.label_source IN %s")
+        params.append(tuple(label_sources))
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    with get_conn() as conn:
+        df = pd.read_sql(f"""
+            SELECT ea.message_uuid,
+                   ea.label_source,
+                   ea.es_potencial_delito,
+                   ea.apartado_510,
+                   ea.grupo_protegido,
+                   ea.conducta_detectada,
+                   ea.justificacion,
+                   ea.confianza,
+                   ea.evaluacion_date,
+                   pm.platform,
+                   pm.content_original,
+                   pm.source_media
+            FROM processed.evaluacion_art510 ea
+            JOIN processed.mensajes pm USING (message_uuid)
+            {where}
+            ORDER BY ea.evaluacion_date DESC
+        """, conn, params=params if params else None)
+
+    if not df.empty:
+        df["platform_label"] = df["platform"].map(platform_label)
+        df["source_label"] = df["label_source"].map(
+            lambda x: LABEL_SOURCE_LABELS.get(x, x)
+        )
+        df["apartado_label"] = df["apartado_510"].map(
+            lambda x: APARTADO_LABELS.get(x, x) if pd.notna(x) and x else "Sin apartado"
+        )
+
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_art510_summary() -> dict:
+    """KPIs generales de Art. 510 (sin filtros)."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT COUNT(*) FROM processed.evaluacion_art510
+        """)
+        total_evaluados = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT COUNT(*) FROM processed.evaluacion_art510
+            WHERE es_potencial_delito = TRUE
+        """)
+        total_delitos = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT COUNT(*) FROM processed.validacion_art510_humana
+        """)
+        total_validados = cur.fetchone()[0]
+
+        cur.close()
+
+    return {
+        "total_evaluados": total_evaluados,
+        "total_delitos": total_delitos,
+        "total_validados": total_validados,
+    }
+
+
+def render_analisis_art510():
+    """Sección 7: Análisis de mensajes bajo el Art. 510.1 del Código Penal."""
+    st.header("Análisis Art. 510 — Potenciales delitos de odio")
+    st.caption(
+        "Evaluación de mensajes etiquetados como odio bajo el criterio del "
+        "artículo 510.1 del Código Penal español (excluyendo apartado 2). "
+        "Conductas: incitación (1a), distribución de material (1b), "
+        "negación/trivialización de genocidio (1c)."
+    )
+
+    # ── Verificar que la tabla existe y tiene datos ──
+    try:
+        summary = load_art510_summary()
+    except Exception:
+        st.warning(
+            "No se encontraron datos de evaluación Art. 510. "
+            "Ejecuta `evaluar_art510.py` para generar las evaluaciones."
+        )
+        return
+
+    if summary["total_evaluados"] == 0:
+        st.info(
+            "Aún no hay evaluaciones Art. 510. "
+            "Ejecuta `evaluar_art510.py` para analizar los mensajes de odio."
+        )
+        return
+
+    # ── Filtros ──
+    st.markdown("### Filtros")
+    col_f1, col_f2, col_f3 = st.columns(3)
+
+    with col_f1:
+        opts = load_filter_options()
+        platforms_display = {p: platform_label(p) for p in opts["platforms"]}
+        sel_platforms = st.multiselect(
+            "Plataforma",
+            options=list(platforms_display.keys()),
+            format_func=lambda x: platforms_display[x],
+            default=list(platforms_display.keys()),
+            key="art510_plat",
+        )
+
+    with col_f2:
+        sel_sources = st.multiselect(
+            "Fuente de etiquetado",
+            options=list(LABEL_SOURCE_LABELS.keys()),
+            format_func=lambda x: LABEL_SOURCE_LABELS[x],
+            default=list(LABEL_SOURCE_LABELS.keys()),
+            key="art510_source",
+        )
+
+    with col_f3:
+        solo_delitos = st.checkbox(
+            "Solo potenciales delitos",
+            value=True,
+            key="art510_solo_delitos",
+        )
+
+    if not sel_platforms or not sel_sources:
+        st.warning("Selecciona al menos una plataforma y una fuente de etiquetado.")
+        return
+
+    df = load_art510_data(
+        platforms=tuple(sel_platforms) if sel_platforms else None,
+        label_sources=tuple(sel_sources) if sel_sources else None,
+        solo_delitos=solo_delitos,
+    )
+
+    if df.empty:
+        st.info("No hay datos con los filtros seleccionados.")
+        return
+
+    # ── KPIs ──
+    st.markdown("---")
+    st.markdown("### Indicadores clave")
+
+    total = len(df)
+    n_delitos = df["es_potencial_delito"].sum()
+    pct_delitos = (n_delitos / total * 100) if total else 0
+
+    n_1a = (df["apartado_510"] == "1a").sum()
+    n_1b = (df["apartado_510"] == "1b").sum()
+    n_1c = (df["apartado_510"] == "1c").sum()
+
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("Evaluados", f"{total:,}")
+    k2.metric("Pot. delitos", f"{n_delitos:,}")
+    k3.metric("% Delitos", f"{pct_delitos:.1f}%")
+    k4.metric("Art. 510.1a", f"{n_1a:,}")
+    k5.metric("Art. 510.1b", f"{n_1b:,}")
+    k6.metric("Art. 510.1c", f"{n_1c:,}")
+
+    # ── Validación humana badge ──
+    validated = summary["total_validados"]
+    if validated > 0:
+        st.caption(f"Validaciones humanas realizadas: {validated:,}")
+
+    # ── Gráficos ──
+    st.markdown("---")
+    st.markdown("### Distribución por apartado y grupo protegido")
+
+    df_delitos = df[df["es_potencial_delito"]].copy()
+
+    if df_delitos.empty:
+        st.info("No hay potenciales delitos con los filtros seleccionados.")
+    else:
+        col_g1, col_g2 = st.columns(2)
+
+        with col_g1:
+            ap_counts = (
+                df_delitos["apartado_label"]
+                .value_counts()
+                .reset_index()
+            )
+            ap_counts.columns = ["Apartado", "Cantidad"]
+            fig_ap = px.pie(
+                ap_counts, names="Apartado", values="Cantidad",
+                title="Por apartado del Art. 510.1",
+                color="Apartado",
+                color_discrete_map={
+                    APARTADO_LABELS["1a"]: ART510_COLORS["1a"],
+                    APARTADO_LABELS["1b"]: ART510_COLORS["1b"],
+                    APARTADO_LABELS["1c"]: ART510_COLORS["1c"],
+                },
+                hole=0.4,
+            )
+            fig_ap.update_layout(height=400)
+            st.plotly_chart(fig_ap, use_container_width=True)
+
+        with col_g2:
+            gp_counts = (
+                df_delitos["grupo_protegido"]
+                .dropna()
+                .where(lambda s: s != "")
+                .dropna()
+                .value_counts()
+                .head(12)
+                .reset_index()
+            )
+            gp_counts.columns = ["Grupo protegido", "Cantidad"]
+            fig_gp = px.bar(
+                gp_counts, x="Cantidad", y="Grupo protegido",
+                orientation="h",
+                title="Por grupo protegido",
+                color_discrete_sequence=[COLORS["accent"]],
+            )
+            fig_gp.update_layout(height=400, yaxis=dict(autorange="reversed"))
+            st.plotly_chart(fig_gp, use_container_width=True)
+
+    # ── Vista agrupada: Plataforma x Fuente ──
+    st.markdown("---")
+    st.markdown("### Vista agrupada")
+
+    if not df_delitos.empty:
+        tab_pivot, tab_conf, tab_detail = st.tabs(
+            ["Plataforma × Etiquetado", "Nivel de confianza", "Detalle mensajes"]
+        )
+
+        with tab_pivot:
+            pivot = pd.crosstab(
+                df_delitos["platform_label"],
+                df_delitos["source_label"],
+                margins=True,
+                margins_name="Total",
+            )
+            st.dataframe(pivot, use_container_width=True)
+
+            if len(df_delitos["platform_label"].unique()) > 0 and len(df_delitos["source_label"].unique()) > 0:
+                grouped = (
+                    df_delitos.groupby(["platform_label", "source_label"])
+                    .size()
+                    .reset_index(name="Cantidad")
+                )
+                fig_grouped = px.bar(
+                    grouped, x="platform_label", y="Cantidad",
+                    color="source_label",
+                    barmode="group",
+                    title="Potenciales delitos por plataforma y fuente de etiquetado",
+                    labels={"platform_label": "Plataforma", "source_label": "Fuente"},
+                    color_discrete_map={
+                        "Etiquetado LLM": COLORS["accent"],
+                        "Etiquetado humano": COLORS["success"],
+                    },
+                )
+                fig_grouped.update_layout(height=400)
+                st.plotly_chart(fig_grouped, use_container_width=True)
+
+        with tab_conf:
+            conf_order = ["alta", "media", "baja"]
+            conf_counts = (
+                df_delitos["confianza"]
+                .value_counts()
+                .reindex(conf_order, fill_value=0)
+                .reset_index()
+            )
+            conf_counts.columns = ["Confianza", "Cantidad"]
+            conf_colors = {"alta": COLORS["danger"], "media": COLORS["warning"], "baja": COLORS["muted"]}
+            fig_conf = px.bar(
+                conf_counts, x="Confianza", y="Cantidad",
+                color="Confianza",
+                color_discrete_map=conf_colors,
+                title="Distribución por nivel de confianza del LLM",
+            )
+            fig_conf.update_layout(height=350, showlegend=False)
+            st.plotly_chart(fig_conf, use_container_width=True)
+
+        with tab_detail:
+            display_cols = [
+                "content_original", "platform_label", "source_label",
+                "apartado_label", "grupo_protegido", "conducta_detectada",
+                "justificacion", "confianza",
+            ]
+            rename_map = {
+                "content_original": "Mensaje",
+                "platform_label": "Plataforma",
+                "source_label": "Fuente",
+                "apartado_label": "Apartado",
+                "grupo_protegido": "Grupo protegido",
+                "conducta_detectada": "Conducta",
+                "justificacion": "Justificación",
+                "confianza": "Confianza",
+            }
+            df_display = df_delitos[display_cols].rename(columns=rename_map)
+            st.dataframe(df_display, use_container_width=True, hide_index=True, height=500)
+
+    # ── Nota legal ──
+    st.markdown("---")
+    with st.expander("Nota sobre el Art. 510.3 (agravante por difusión en internet)"):
+        st.markdown(
+            "Todos los mensajes analizados provienen de plataformas de internet "
+            "(X, YouTube), lo que técnicamente aplica el **agravante del Art. 510.3**: "
+            "\"*Las penas se impondrán en su mitad superior cuando los hechos se "
+            "hubieran llevado a cabo a través de un medio de comunicación social, "
+            "por medio de internet o mediante el uso de tecnologías de la información, "
+            "de modo que, aquel se hiciera accesible a un elevado número de personas.*\""
+        )
+
+
+# ============================================================
 # SECCIÓN: DELITOS DE ODIO (datos oficiales)
 # ============================================================
 
@@ -2404,27 +2752,143 @@ def _save_annotation(
         return False
 
 
-def render_anotacion():
-    """Sección de anotación humana para mensajes YouTube."""
-    st.title("Anotación YouTube")
-    st.markdown(
-        "Validación humana de mensajes candidatos de YouTube filtrados "
-        "por relevancia LLM."
-    )
+def _load_v510_queue() -> pd.DataFrame:
+    """Carga mensajes con potencial delito Art. 510 pendientes de validación humana."""
+    skipped = st.session_state.get("v510_skipped", set())
 
-    # --- Identificación del anotador ---
-    annotator = st.text_input(
-        "Nombre / ID de anotador",
-        value=st.session_state.get("annotator_id", ""),
-        placeholder="Ej: CIEDES, Anotador1...",
-        key="ann_id_input",
-    )
-    if annotator:
-        st.session_state["annotator_id"] = annotator.strip()
+    try:
+        with get_conn() as conn:
+            df = pd.read_sql("""
+                SELECT ea.message_uuid,
+                       ea.label_source,
+                       ea.apartado_510,
+                       ea.grupo_protegido,
+                       ea.conducta_detectada,
+                       ea.justificacion,
+                       ea.confianza,
+                       pm.platform,
+                       pm.content_original,
+                       pm.source_media,
+                       rm.tweet_id AS video_id
+                FROM processed.evaluacion_art510 ea
+                JOIN processed.mensajes pm USING (message_uuid)
+                LEFT JOIN raw.mensajes rm USING (message_uuid)
+                WHERE ea.es_potencial_delito = TRUE
+                  AND NOT EXISTS (
+                      SELECT 1 FROM processed.validacion_art510_humana vh
+                      WHERE vh.message_uuid = ea.message_uuid
+                        AND vh.label_source = ea.label_source
+                  )
+                ORDER BY
+                    CASE ea.confianza
+                        WHEN 'alta' THEN 1
+                        WHEN 'media' THEN 2
+                        ELSE 3
+                    END,
+                    ea.evaluacion_date DESC
+                LIMIT 200
+            """, conn)
+    except Exception:
+        return pd.DataFrame()
 
-    if not annotator.strip():
-        st.info("Ingresa tu nombre de anotador para comenzar.")
-        return
+    if skipped and not df.empty:
+        keys = df["message_uuid"].astype(str) + "|" + df["label_source"].astype(str)
+        df = df[~keys.isin(skipped)]
+
+    return df
+
+
+def _load_v510_kpis(annotator_id: str) -> dict:
+    """KPIs de progreso de validación Art. 510."""
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+
+            cur.execute("""
+                SELECT COUNT(*) FROM processed.evaluacion_art510
+                WHERE es_potencial_delito = TRUE
+                  AND NOT EXISTS (
+                      SELECT 1 FROM processed.validacion_art510_humana vh
+                      WHERE vh.message_uuid = evaluacion_art510.message_uuid
+                        AND vh.label_source = evaluacion_art510.label_source
+                  )
+            """)
+            pendientes = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM processed.validacion_art510_humana")
+            total_validados = cur.fetchone()[0]
+
+            cur.execute("""
+                SELECT COUNT(*) FROM processed.validacion_art510_humana
+                WHERE annotation_date = CURRENT_DATE
+            """)
+            validados_hoy = cur.fetchone()[0]
+
+            cur.execute("""
+                SELECT COUNT(*) FROM processed.validacion_art510_humana
+                WHERE annotator_id = %s
+            """, (annotator_id,))
+            por_anotador = cur.fetchone()[0]
+
+            cur.close()
+
+        return {
+            "pendientes": pendientes,
+            "total_validados": total_validados,
+            "validados_hoy": validados_hoy,
+            "por_anotador": por_anotador,
+        }
+    except Exception:
+        return {
+            "pendientes": 0, "total_validados": 0,
+            "validados_hoy": 0, "por_anotador": 0,
+        }
+
+
+def _save_v510_validation(
+    message_uuid: str,
+    label_source: str,
+    validacion: str,
+    apartado_final: Optional[str],
+    grupo_final: Optional[str],
+    conducta_final: Optional[str],
+    comentario: Optional[str],
+    annotator_id: str,
+) -> bool:
+    """Guarda la validación humana de Art. 510."""
+    from datetime import date
+
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO processed.validacion_art510_humana
+                (message_uuid, label_source, validacion_humana,
+                 apartado_510_final, grupo_protegido_final, conducta_final,
+                 comentario, annotator_id, annotation_date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (message_uuid, label_source) DO UPDATE SET
+                    validacion_humana = EXCLUDED.validacion_humana,
+                    apartado_510_final = EXCLUDED.apartado_510_final,
+                    grupo_protegido_final = EXCLUDED.grupo_protegido_final,
+                    conducta_final = EXCLUDED.conducta_final,
+                    comentario = EXCLUDED.comentario,
+                    annotator_id = EXCLUDED.annotator_id,
+                    annotation_date = EXCLUDED.annotation_date
+            """, (
+                message_uuid, label_source, validacion,
+                apartado_final, grupo_final, conducta_final,
+                comentario, annotator_id, date.today(),
+            ))
+            cur.close()
+        return True
+    except Exception as e:
+        st.error(f"Error guardando validación Art. 510: {e}")
+        return False
+
+
+def _render_anotacion_youtube(annotator: str):
+    """Contenido del tab de anotación YouTube (flujo original sin cambios)."""
 
     # === PASO 0: procesar guardado pendiente (antes de renderizar) ===
     pending_save = st.session_state.pop("_ann_pending_save", None)
@@ -2452,12 +2916,12 @@ def render_anotacion():
             st.error("Error al guardar la anotación.")
 
     # --- KPIs de progreso ---
-    kpis = _load_annotation_kpis(annotator.strip())
+    kpis = _load_annotation_kpis(annotator)
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Pendientes", f"{kpis['pendientes']:,}")
     k2.metric("Total anotados (YT)", f"{kpis['total_anotados']:,}")
     k3.metric("Anotados hoy", f"{kpis['anotados_hoy']:,}")
-    k4.metric(f"Por {annotator.strip()}", f"{kpis['por_anotador']:,}")
+    k4.metric(f"Por {annotator}", f"{kpis['por_anotador']:,}")
 
     st.divider()
 
@@ -2513,7 +2977,6 @@ def render_anotacion():
     st.divider()
 
     # --- Formulario ---
-    # Contador incremental para forzar form key nuevo tras cada save/skip
     form_seq = st.session_state.get("_ann_form_seq", 0)
     fk = f"ann_form_{form_seq}"
 
@@ -2578,14 +3041,13 @@ def render_anotacion():
             else (False if odio_choice == "No Odio" else None)
         )
 
-        # Encolar guardado para el próximo render (patrón robusto)
         st.session_state["_ann_pending_save"] = {
             "message_uuid": msg_uuid,
             "odio_flag": odio_flag,
             "categoria_odio": categoria if es_odio else None,
             "intensidad": intensidad if es_odio else None,
             "humor_flag": humor if es_odio else False,
-            "annotator_id": annotator.strip(),
+            "annotator_id": annotator,
         }
         st.session_state["_ann_form_seq"] = form_seq + 1
         st.rerun()
@@ -2594,6 +3056,231 @@ def render_anotacion():
         st.session_state["ann_skipped"].add(msg_uuid)
         st.session_state["_ann_form_seq"] = form_seq + 1
         st.rerun()
+
+
+def _render_validacion_art510(annotator: str):
+    """Contenido del tab de validación Art. 510 (X + YouTube)."""
+
+    # === Procesar guardado pendiente ===
+    pending = st.session_state.pop("_v510_pending_save", None)
+    if pending is not None:
+        ok = _save_v510_validation(**pending)
+        if ok:
+            skipped_set = st.session_state.get("v510_skipped", set())
+            key = f"{pending['message_uuid']}|{pending['label_source']}"
+            skipped_set.discard(key)
+            st.session_state["v510_skipped"] = skipped_set
+            st.session_state["_v510_last_status"] = (
+                "ok", pending["message_uuid"][:8]
+            )
+        else:
+            st.session_state["_v510_last_status"] = ("error", "")
+
+    last_status = st.session_state.pop("_v510_last_status", None)
+    if last_status:
+        if last_status[0] == "ok":
+            st.success(f"Validación Art. 510 guardada ({last_status[1]}...)")
+        else:
+            st.error("Error al guardar la validación Art. 510.")
+
+    # --- KPIs ---
+    kpis = _load_v510_kpis(annotator)
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Pendientes Art. 510", f"{kpis['pendientes']:,}")
+    k2.metric("Total validados", f"{kpis['total_validados']:,}")
+    k3.metric("Validados hoy", f"{kpis['validados_hoy']:,}")
+    k4.metric(f"Por {annotator}", f"{kpis['por_anotador']:,}")
+
+    st.divider()
+
+    # --- Cola ---
+    if "v510_skipped" not in st.session_state:
+        st.session_state["v510_skipped"] = set()
+
+    queue = _load_v510_queue()
+
+    if queue.empty:
+        st.success("No hay mensajes Art. 510 pendientes de validación.")
+        st.caption(
+            "Si esperabas mensajes, verifica que se haya ejecutado "
+            "`evaluar_art510.py` para generar las evaluaciones."
+        )
+        if st.button("Limpiar saltos Art. 510 y recargar", key="v510_clear"):
+            st.session_state["v510_skipped"] = set()
+            st.rerun()
+        return
+
+    msg = queue.iloc[0]
+    msg_uuid = str(msg["message_uuid"])
+    msg_label_source = str(msg["label_source"])
+    msg_key = f"{msg_uuid}|{msg_label_source}"
+
+    st.subheader(f"Mensaje a validar  ({queue.shape[0]} en cola)")
+
+    # --- Contenido y evaluación LLM ---
+    col_msg, col_eval = st.columns([3, 2])
+    with col_msg:
+        st.markdown("**Texto del mensaje:**")
+        st.text_area(
+            "contenido_510", value=str(msg["content_original"]),
+            height=150, disabled=True, label_visibility="collapsed",
+        )
+        plat = platform_label(str(msg.get("platform", "")))
+        medio = msg.get("source_media") or "—"
+        st.caption(f"Plataforma: **{plat}** · Medio: **{medio}**")
+
+    with col_eval:
+        st.markdown("**Evaluación del LLM:**")
+        ap = msg.get("apartado_510") or "—"
+        ap_label = APARTADO_LABELS.get(ap, ap)
+        st.markdown(f"**Apartado:** {ap_label}")
+        st.markdown(f"**Grupo protegido:** {msg.get('grupo_protegido') or '—'}")
+        st.markdown(f"**Conducta:** {msg.get('conducta_detectada') or '—'}")
+        st.markdown(f"**Confianza:** {msg.get('confianza') or '—'}")
+        st.markdown(f"**Fuente etiquetado:** {LABEL_SOURCE_LABELS.get(msg_label_source, msg_label_source)}")
+        just = msg.get("justificacion") or ""
+        if just:
+            st.markdown(f"**Justificación:** _{just}_")
+
+    st.divider()
+
+    # --- Formulario de validación ---
+    form_seq = st.session_state.get("_v510_form_seq", 0)
+    fk = f"v510_form_{form_seq}"
+
+    with st.form(key=fk, clear_on_submit=False):
+        st.markdown("**Validación**")
+        validacion = st.radio(
+            "¿Es potencial delito Art. 510.1?",
+            ["Confirmar", "Rechazar", "Corregir"],
+            horizontal=True,
+            index=None,
+            key=f"{fk}_val",
+            help="Confirmar: el LLM acertó. Rechazar: no es delito. Corregir: es delito pero con datos distintos.",
+        )
+
+        st.markdown("---")
+        st.caption(
+            "Completar solo si seleccionas **Corregir** "
+            "(se usarán los valores del LLM si se confirma)."
+        )
+
+        apartado_opts = ["1a", "1b", "1c"]
+        apartado_default = (
+            apartado_opts.index(ap) if ap in apartado_opts else 0
+        )
+        apartado_sel = st.selectbox(
+            "Apartado Art. 510.1",
+            options=apartado_opts,
+            format_func=lambda x: APARTADO_LABELS.get(x, x),
+            index=apartado_default,
+            key=f"{fk}_ap",
+        )
+
+        grupo_sel = st.text_input(
+            "Grupo protegido",
+            value=msg.get("grupo_protegido") or "",
+            key=f"{fk}_gp",
+            help="Ej: raza, religión, orientación sexual, discapacidad...",
+        )
+
+        conducta_sel = st.text_input(
+            "Conducta detectada",
+            value=msg.get("conducta_detectada") or "",
+            key=f"{fk}_cond",
+        )
+
+        comentario = st.text_area(
+            "Comentario (opcional)",
+            height=80,
+            key=f"{fk}_comment",
+        )
+
+        st.markdown("---")
+        col_save, col_skip = st.columns(2)
+        submitted = col_save.form_submit_button(
+            "Guardar y siguiente", type="primary", use_container_width=True,
+        )
+        skipped = col_skip.form_submit_button(
+            "Saltar", use_container_width=True,
+        )
+
+    if submitted:
+        if validacion is None:
+            st.error("Selecciona una opción (Confirmar / Rechazar / Corregir).")
+            return
+
+        validacion_map = {
+            "Confirmar": "confirmado",
+            "Rechazar": "rechazado",
+            "Corregir": "corregido",
+        }
+
+        if validacion == "Confirmar":
+            ap_final = msg.get("apartado_510") or None
+            gp_final = msg.get("grupo_protegido") or None
+            cd_final = msg.get("conducta_detectada") or None
+        elif validacion == "Corregir":
+            ap_final = apartado_sel
+            gp_final = grupo_sel.strip() or None
+            cd_final = conducta_sel.strip() or None
+        else:
+            ap_final = None
+            gp_final = None
+            cd_final = None
+
+        st.session_state["_v510_pending_save"] = {
+            "message_uuid": msg_uuid,
+            "label_source": msg_label_source,
+            "validacion": validacion_map[validacion],
+            "apartado_final": ap_final,
+            "grupo_final": gp_final,
+            "conducta_final": cd_final,
+            "comentario": comentario.strip() or None,
+            "annotator_id": annotator,
+        }
+        st.session_state["_v510_form_seq"] = form_seq + 1
+        st.rerun()
+
+    if skipped:
+        st.session_state.setdefault("v510_skipped", set()).add(msg_key)
+        st.session_state["_v510_form_seq"] = form_seq + 1
+        st.rerun()
+
+
+def render_anotacion():
+    """Sección de anotación humana: YouTube + validación Art. 510."""
+    st.title("Anotación y validación")
+    st.markdown(
+        "Validación humana de mensajes: anotación de odio en YouTube "
+        "y validación de potenciales delitos Art. 510 (X + YouTube)."
+    )
+
+    # --- Identificación del anotador (compartido entre tabs) ---
+    annotator = st.text_input(
+        "Nombre / ID de anotador",
+        value=st.session_state.get("annotator_id", ""),
+        placeholder="Ej: CIEDES, Anotador1...",
+        key="ann_id_input",
+    )
+    if annotator:
+        st.session_state["annotator_id"] = annotator.strip()
+
+    if not annotator.strip():
+        st.info("Ingresa tu nombre de anotador para comenzar.")
+        return
+
+    # --- Tabs ---
+    tab_yt, tab_510 = st.tabs([
+        "Anotación odio YouTube",
+        "Validación Art. 510 (X + YouTube)",
+    ])
+
+    with tab_yt:
+        _render_anotacion_youtube(annotator.strip())
+
+    with tab_510:
+        _render_validacion_art510(annotator.strip())
 
 
 # ============================================================
@@ -2976,7 +3663,9 @@ def main():
         render_terminos()
     elif section == "Dataset Gold":
         render_gold_dataset()
-    elif section == "Anotación YouTube":
+    elif section == "Análisis Art. 510":
+        render_analisis_art510()
+    elif section == "Anotación y validación":
         render_anotacion()
     elif section == "Delitos de odio (oficial)":
         render_delitos()
