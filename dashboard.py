@@ -2344,7 +2344,14 @@ def _render_art510_preview(sel_platforms, sel_sources):
     ):
         _art510_ensure_tables()
 
-        from openai import OpenAI as _OpenAI
+        try:
+            from openai import OpenAI as _OpenAI
+        except ImportError:
+            st.error(
+                "El paquete `openai` no está instalado. "
+                "Agrega `openai>=1.0` a `requirements.txt` y reinicia la app."
+            )
+            return
         client = _OpenAI(api_key=api_key)
 
         batch_to_process = pending[:max_eval]
@@ -2602,7 +2609,14 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
                 f"Evaluar {max_eval} nuevos mensajes",
                 type="primary", key="art510_full_run",
             ):
-                from openai import OpenAI as _OpenAI
+                try:
+                    from openai import OpenAI as _OpenAI
+                except ImportError:
+                    st.error(
+                        "El paquete `openai` no está instalado. "
+                        "Agrega `openai>=1.0` a `requirements.txt` y reinicia la app."
+                    )
+                    return
                 client = _OpenAI(api_key=api_key)
                 batch = new_pending[:max_eval]
                 results = []
