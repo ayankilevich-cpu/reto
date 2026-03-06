@@ -1988,10 +1988,25 @@ def _art510_ensure_tables():
         PRIMARY KEY (message_uuid, label_source)
     );
     """
+    alter_ddl = """
+    DO $$ BEGIN
+        ALTER TABLE processed.evaluacion_art510
+            ALTER COLUMN grupo_protegido TYPE VARCHAR(500),
+            ALTER COLUMN conducta_detectada TYPE VARCHAR(500);
+    EXCEPTION WHEN others THEN NULL;
+    END $$;
+    DO $$ BEGIN
+        ALTER TABLE processed.validacion_art510_humana
+            ALTER COLUMN grupo_protegido_final TYPE VARCHAR(500),
+            ALTER COLUMN conducta_final TYPE VARCHAR(500);
+    EXCEPTION WHEN others THEN NULL;
+    END $$;
+    """
     try:
         with get_conn() as conn:
             cur = conn.cursor()
             cur.execute(ddl)
+            cur.execute(alter_ddl)
             cur.close()
     except Exception as e:
         st.error(f"Error creando tablas Art. 510: {e}")
@@ -2001,6 +2016,12 @@ def _art510_save_batch(results: list):
     """Guarda un lote de resultados en processed.evaluacion_art510."""
     if not results:
         return
+
+    def _trunc(val, maxlen):
+        if val and len(str(val)) > maxlen:
+            return str(val)[:maxlen]
+        return val or None
+
     columns = [
         "message_uuid", "label_source", "es_potencial_delito", "apartado_510",
         "grupo_protegido", "conducta_detectada", "justificacion", "confianza",
@@ -2009,18 +2030,25 @@ def _art510_save_batch(results: list):
     rows = []
     for r in results:
         rows.append((
-            r["message_uuid"], r["label_source"], r["es_potencial_delito"],
-            r["apartado_510"] or None, r["grupo_protegido"] or None,
-            r["conducta_detectada"] or None, r["justificacion"] or None,
-            r["confianza"] or None, "v1",
+            r["message_uuid"], _trunc(r["label_source"], 20),
+            r["es_potencial_delito"],
+            _trunc(r.get("apartado_510"), 5),
+            _trunc(r.get("grupo_protegido"), 200),
+            _trunc(r.get("conducta_detectada"), 200),
+            r.get("justificacion") or None,
+            _trunc(r.get("confianza"), 10),
+            "v1",
         ))
-    with get_conn() as conn:
-        from db_utils import upsert_rows as _upsert
-        _upsert(
-            conn, "processed.evaluacion_art510", columns, rows,
-            conflict_columns=["message_uuid", "label_source"],
-            update_columns=[c for c in columns if c not in ("message_uuid", "label_source")],
-        )
+    try:
+        with get_conn() as conn:
+            from db_utils import upsert_rows as _upsert
+            _upsert(
+                conn, "processed.evaluacion_art510", columns, rows,
+                conflict_columns=["message_uuid", "label_source"],
+                update_columns=[c for c in columns if c not in ("message_uuid", "label_source")],
+            )
+    except Exception as e:
+        st.warning(f"Error guardando lote: {e}")
 
 
 # Categorías del etiquetado que mapean a grupos protegidos Art. 510
