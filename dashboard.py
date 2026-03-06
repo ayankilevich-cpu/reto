@@ -2012,10 +2012,14 @@ def _art510_ensure_tables():
         st.error(f"Error creando tablas Art. 510: {e}")
 
 
-def _art510_save_batch(results: list):
-    """Guarda un lote de resultados en processed.evaluacion_art510."""
+def _art510_save_batch(results: list) -> int:
+    """Guarda un lote de resultados en processed.evaluacion_art510.
+
+    Returns:
+        Número de filas guardadas con éxito, 0 si hubo error.
+    """
     if not results:
-        return
+        return 0
 
     def _trunc(val, maxlen):
         if val and len(str(val)) > maxlen:
@@ -2047,8 +2051,14 @@ def _art510_save_batch(results: list):
                 conflict_columns=["message_uuid", "label_source"],
                 update_columns=[c for c in columns if c not in ("message_uuid", "label_source")],
             )
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM processed.evaluacion_art510")
+            total_db = cur.fetchone()[0]
+            cur.close()
+        return total_db
     except Exception as e:
         st.warning(f"Error guardando lote: {e}")
+        return 0
 
 
 # Categorías del etiquetado que mapean a grupos protegidos Art. 510
@@ -2476,7 +2486,9 @@ def _render_art510_preview(sel_platforms, sel_sources):
 
         batch_to_process = pending[:max_eval]
         results = []
+        unsaved_buffer = []
         n_delitos = 0
+        total_in_db = total_already
 
         progress = st.progress(0, text="Iniciando evaluación...")
         status = st.empty()
@@ -2499,6 +2511,7 @@ def _render_art510_preview(sel_platforms, sel_sources):
                     **evaluation,
                 }
                 results.append(result)
+                unsaved_buffer.append(result)
 
                 if evaluation["es_potencial_delito"]:
                     n_delitos += 1
@@ -2506,27 +2519,45 @@ def _render_art510_preview(sel_platforms, sel_sources):
                 pct = (i + 1) / len(batch_to_process)
                 progress.progress(pct, text=f"Evaluando {i+1}/{len(batch_to_process)}...")
 
-                if len(results) % 10 == 0:
-                    _art510_save_batch(results[-10:])
-                    status.caption(f"Guardados {len(results):,} | Potenciales delitos: {n_delitos}")
+                if len(unsaved_buffer) >= 10:
+                    db_count = _art510_save_batch(unsaved_buffer)
+                    if db_count > 0:
+                        total_in_db = db_count
+                        status.success(
+                            f"Guardados en PostgreSQL: {len(results):,}/{len(batch_to_process)} "
+                            f"(total en BD: {total_in_db:,}) | Pot. delitos: {n_delitos}"
+                        )
+                    else:
+                        status.warning(
+                            f"Procesados {len(results):,}/{len(batch_to_process)} — "
+                            f"error al guardar lote en BD"
+                        )
+                    unsaved_buffer = []
 
         except Exception as e:
             st.error(f"Error durante la evaluación: {type(e).__name__} — {e}")
-            # Guardar lo que se haya procesado hasta ahora
+            if unsaved_buffer:
+                db_count = _art510_save_batch(unsaved_buffer)
+                if db_count > 0:
+                    total_in_db = db_count
             if results:
-                _art510_save_batch(results)
-                st.warning(f"Se guardaron {len(results):,} evaluaciones procesadas antes del error.")
+                st.warning(
+                    f"Se guardaron {len(results):,} evaluaciones antes del error. "
+                    f"Total en BD: {total_in_db:,}"
+                )
                 st.cache_data.clear()
             return
 
-        remainder = len(results) % 10
-        if remainder > 0:
-            _art510_save_batch(results[-remainder:])
+        if unsaved_buffer:
+            db_count = _art510_save_batch(unsaved_buffer)
+            if db_count > 0:
+                total_in_db = db_count
 
         progress.progress(1.0, text="Evaluación completada")
         st.success(
             f"Evaluación completada: {len(results):,} mensajes procesados, "
-            f"{n_delitos:,} potenciales delitos detectados."
+            f"{n_delitos:,} potenciales delitos detectados. "
+            f"**Total acumulado en BD: {total_in_db:,}**"
         )
         st.cache_data.clear()
         st.balloons()
@@ -2551,18 +2582,19 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
     st.markdown("---")
     st.markdown("### Indicadores clave")
 
-    total = len(df)
-    n_delitos = df["es_potencial_delito"].sum()
-    pct_delitos = (n_delitos / total * 100) if total else 0
+    total_evaluados_db = summary["total_evaluados"]
+    total_delitos_db = summary["total_delitos"]
+    pct_delitos_db = (total_delitos_db / total_evaluados_db * 100) if total_evaluados_db else 0
 
-    n_1a = (df["apartado_510"] == "1a").sum()
-    n_1b = (df["apartado_510"] == "1b").sum()
-    n_1c = (df["apartado_510"] == "1c").sum()
+    df_delitos_all = df[df["es_potencial_delito"]].copy() if not df.empty else df
+    n_1a = (df_delitos_all["apartado_510"] == "1a").sum() if not df_delitos_all.empty else 0
+    n_1b = (df_delitos_all["apartado_510"] == "1b").sum() if not df_delitos_all.empty else 0
+    n_1c = (df_delitos_all["apartado_510"] == "1c").sum() if not df_delitos_all.empty else 0
 
     k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Evaluados", f"{total:,}")
-    k2.metric("Pot. delitos", f"{n_delitos:,}")
-    k3.metric("% Delitos", f"{pct_delitos:.1f}%")
+    k1.metric("Total evaluados", f"{total_evaluados_db:,}")
+    k2.metric("Pot. delitos", f"{total_delitos_db:,}")
+    k3.metric("% Delitos", f"{pct_delitos_db:.1f}%")
     k4.metric("Art. 510.1a", f"{n_1a:,}")
     k5.metric("Art. 510.1b", f"{n_1b:,}")
     k6.metric("Art. 510.1c", f"{n_1c:,}")
@@ -2570,6 +2602,12 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
     validated = summary["total_validados"]
     if validated > 0:
         st.caption(f"Validaciones humanas realizadas: {validated:,}")
+
+    if solo_delitos and len(df) < total_evaluados_db:
+        st.caption(
+            f"Mostrando {len(df):,} mensajes (filtro activo: solo potenciales delitos). "
+            f"Desmarca el filtro para ver todos."
+        )
 
     # ── Gráficos ──
     st.markdown("---")
@@ -2752,8 +2790,11 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
 
                 batch = new_pending[:max_eval]
                 results = []
+                unsaved_buf = []
                 n_delitos = 0
+                total_in_db = len(already_done)
                 progress = st.progress(0, text="Evaluando...")
+                status_full = st.empty()
 
                 try:
                     for i, r in enumerate(batch):
@@ -2768,26 +2809,44 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
                             }
                         results.append({"message_uuid": str(r["message_uuid"]),
                                         "label_source": str(r["label_source"]), **ev})
+                        unsaved_buf.append(results[-1])
                         if ev["es_potencial_delito"]:
                             n_delitos += 1
                         progress.progress((i + 1) / len(batch),
                                           text=f"Evaluando {i+1}/{len(batch)}...")
-                        if len(results) % 10 == 0:
-                            _art510_save_batch(results[-10:])
+                        if len(unsaved_buf) >= 10:
+                            db_count = _art510_save_batch(unsaved_buf)
+                            if db_count > 0:
+                                total_in_db = db_count
+                                status_full.success(
+                                    f"Guardados en PostgreSQL: {len(results):,}/{len(batch)} "
+                                    f"(total en BD: {total_in_db:,}) | Pot. delitos: {n_delitos}"
+                                )
+                            unsaved_buf = []
                 except Exception as e:
                     st.error(f"Error: {type(e).__name__} — {e}")
+                    if unsaved_buf:
+                        db_count = _art510_save_batch(unsaved_buf)
+                        if db_count > 0:
+                            total_in_db = db_count
                     if results:
-                        _art510_save_batch(results)
-                        st.warning(f"Guardados {len(results):,} antes del error.")
+                        st.warning(
+                            f"Guardados {len(results):,} antes del error. "
+                            f"Total en BD: {total_in_db:,}"
+                        )
                         st.cache_data.clear()
                     return
 
-                remainder = len(results) % 10
-                if remainder > 0:
-                    _art510_save_batch(results[-remainder:])
+                if unsaved_buf:
+                    db_count = _art510_save_batch(unsaved_buf)
+                    if db_count > 0:
+                        total_in_db = db_count
 
                 progress.progress(1.0, text="Completado")
-                st.success(f"{len(results):,} evaluados, {n_delitos:,} potenciales delitos.")
+                st.success(
+                    f"{len(results):,} evaluados, {n_delitos:,} potenciales delitos. "
+                    f"**Total acumulado en BD: {total_in_db:,}**"
+                )
                 st.cache_data.clear()
 
 
