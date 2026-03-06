@@ -1786,6 +1786,21 @@ ART510_COLORS = {
     "1c": "#F39C12",
 }
 
+# Categorías del etiquetado que mapean a grupos protegidos Art. 510
+CATEGORIAS_ART510 = {
+    "odio_etnico_cultural_religioso",
+    "odio_genero_identidad_orientacion",
+    "odio_condicion_social_economica_salud",
+    "odio_ideologico_politico",
+}
+
+CATEGORIA_TO_GRUPO_510 = {
+    "odio_etnico_cultural_religioso": "Raza / Etnia / Religión",
+    "odio_genero_identidad_orientacion": "Sexo / Orientación / Identidad sexual",
+    "odio_condicion_social_economica_salud": "Aporofobia / Enfermedad / Discapacidad",
+    "odio_ideologico_politico": "Ideología",
+}
+
 
 @st.cache_data(ttl=300)
 def load_art510_data(
@@ -1848,21 +1863,29 @@ def load_art510_summary() -> dict:
     with get_conn() as conn:
         cur = conn.cursor()
 
-        cur.execute("""
-            SELECT COUNT(*) FROM processed.evaluacion_art510
-        """)
-        total_evaluados = cur.fetchone()[0]
+        try:
+            cur.execute("SELECT COUNT(*) FROM processed.evaluacion_art510")
+            total_evaluados = cur.fetchone()[0]
+        except Exception:
+            conn.rollback()
+            total_evaluados = 0
 
-        cur.execute("""
-            SELECT COUNT(*) FROM processed.evaluacion_art510
-            WHERE es_potencial_delito = TRUE
-        """)
-        total_delitos = cur.fetchone()[0]
+        try:
+            cur.execute("""
+                SELECT COUNT(*) FROM processed.evaluacion_art510
+                WHERE es_potencial_delito = TRUE
+            """)
+            total_delitos = cur.fetchone()[0]
+        except Exception:
+            conn.rollback()
+            total_delitos = 0
 
-        cur.execute("""
-            SELECT COUNT(*) FROM processed.validacion_art510_humana
-        """)
-        total_validados = cur.fetchone()[0]
+        try:
+            cur.execute("SELECT COUNT(*) FROM processed.validacion_art510_humana")
+            total_validados = cur.fetchone()[0]
+        except Exception:
+            conn.rollback()
+            total_validados = 0
 
         cur.close()
 
@@ -1873,68 +1896,227 @@ def load_art510_summary() -> dict:
     }
 
 
-def render_analisis_art510():
-    """Sección 7: Análisis de mensajes bajo el Art. 510.1 del Código Penal."""
-    st.header("Análisis Art. 510 — Potenciales delitos de odio")
-    st.caption(
-        "Evaluación de mensajes etiquetados como odio bajo el criterio del "
-        "artículo 510.1 del Código Penal español (excluyendo apartado 2). "
-        "Conductas: incitación (1a), distribución de material (1b), "
-        "negación/trivialización de genocidio (1c)."
+@st.cache_data(ttl=300)
+def load_art510_candidates(
+    platforms: Optional[Tuple] = None,
+    label_sources: Optional[Tuple] = None,
+) -> pd.DataFrame:
+    """
+    Carga candidatos a Art. 510 desde gold dataset y etiquetas LLM.
+
+    Mensajes ODIO cuya categoría mapea a grupos protegidos del Art. 510.
+    Se usa como vista previa cuando aún no se ha ejecutado evaluar_art510.py.
+    """
+    dfs = []
+
+    with get_conn() as conn:
+        # --- Fuente LLM ---
+        if not label_sources or "llm" in label_sources:
+            plat_cond = ""
+            params_llm: list = []
+            if platforms:
+                plat_cond = "AND pm.platform IN %s"
+                params_llm.append(tuple(platforms))
+
+            df_llm = pd.read_sql(f"""
+                SELECT pm.message_uuid,
+                       'llm' AS label_source,
+                       pm.content_original,
+                       pm.platform,
+                       pm.source_media,
+                       e.categoria_odio_pred AS categoria,
+                       e.intensidad_pred AS intensidad,
+                       e.resumen_motivo AS motivo_etiquetado
+                FROM processed.mensajes pm
+                JOIN processed.etiquetas_llm e USING (message_uuid)
+                WHERE e.clasificacion_principal = 'ODIO'
+                  {plat_cond}
+                ORDER BY e.intensidad_pred DESC NULLS LAST
+            """, conn, params=params_llm if params_llm else None)
+            dfs.append(df_llm)
+
+        # --- Fuente Humano (gold + validaciones) ---
+        if not label_sources or "humano" in label_sources:
+            plat_cond = ""
+            params_h: list = []
+            if platforms:
+                plat_cond = "AND pm.platform IN %s"
+                params_h.append(tuple(platforms))
+
+            df_human = pd.read_sql(f"""
+                SELECT pm.message_uuid,
+                       'humano' AS label_source,
+                       pm.content_original,
+                       pm.platform,
+                       pm.source_media,
+                       COALESCE(g.y_categoria_final, v.categoria_odio) AS categoria,
+                       COALESCE(g.y_intensidad_final::text, v.intensidad::text) AS intensidad,
+                       'Validación humana' AS motivo_etiquetado
+                FROM processed.mensajes pm
+                LEFT JOIN processed.validaciones_manuales v USING (message_uuid)
+                LEFT JOIN processed.gold_dataset g USING (message_uuid)
+                WHERE (v.odio_flag = TRUE OR g.y_odio_bin = 1)
+                  {plat_cond}
+            """, conn, params=params_h if params_h else None)
+            dfs.append(df_human)
+
+    if not dfs:
+        return pd.DataFrame()
+
+    df = pd.concat(dfs, ignore_index=True)
+    df = df.drop_duplicates(subset=["message_uuid", "label_source"])
+
+    # Pre-filtro Art. 510: solo categorías que mapean a grupos protegidos
+    df = df[df["categoria"].isin(CATEGORIAS_ART510)].copy()
+
+    if not df.empty:
+        df["platform_label"] = df["platform"].map(platform_label)
+        df["source_label"] = df["label_source"].map(
+            lambda x: LABEL_SOURCE_LABELS.get(x, x)
+        )
+        df["grupo_protegido_estimado"] = df["categoria"].map(
+            lambda x: CATEGORIA_TO_GRUPO_510.get(x, x)
+        )
+        df["categoria_label"] = df["categoria"].map(
+            lambda x: CATEGORIAS_LABELS.get(x, x)
+        )
+
+    return df
+
+
+def _render_art510_preview(sel_platforms, sel_sources):
+    """Vista previa de candidatos Art. 510 basada en datos existentes."""
+    st.info(
+        "**Modo vista previa** — Aún no se ha ejecutado `evaluar_art510.py`. "
+        "Se muestran mensajes etiquetados como ODIO cuyas categorías "
+        "corresponden a grupos protegidos del Art. 510.1. "
+        "Para obtener la evaluación jurídica completa (apartado, conducta, "
+        "confianza), ejecuta el script de evaluación."
     )
 
-    # ── Verificar que la tabla existe y tiene datos ──
-    try:
-        summary = load_art510_summary()
-    except Exception:
-        st.warning(
-            "No se encontraron datos de evaluación Art. 510. "
-            "Ejecuta `evaluar_art510.py` para generar las evaluaciones."
-        )
+    df = load_art510_candidates(
+        platforms=tuple(sel_platforms) if sel_platforms else None,
+        label_sources=tuple(sel_sources) if sel_sources else None,
+    )
+
+    if df.empty:
+        st.warning("No hay candidatos Art. 510 con los filtros seleccionados.")
         return
 
-    if summary["total_evaluados"] == 0:
-        st.info(
-            "Aún no hay evaluaciones Art. 510. "
-            "Ejecuta `evaluar_art510.py` para analizar los mensajes de odio."
+    # ── KPIs ──
+    st.markdown("---")
+    st.markdown("### Candidatos a evaluación Art. 510")
+
+    total = len(df)
+    n_llm = (df["label_source"] == "llm").sum()
+    n_human = (df["label_source"] == "humano").sum()
+    n_int3 = (df["intensidad"].astype(str) == "3").sum()
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total candidatos", f"{total:,}")
+    k2.metric("Por LLM", f"{n_llm:,}")
+    k3.metric("Por humanos", f"{n_human:,}")
+    k4.metric("Intensidad 3 (hostil)", f"{n_int3:,}")
+
+    # ── Gráficos ──
+    st.markdown("---")
+    col_g1, col_g2 = st.columns(2)
+
+    with col_g1:
+        cat_counts = (
+            df["grupo_protegido_estimado"]
+            .value_counts()
+            .reset_index()
         )
-        return
-
-    # ── Filtros ──
-    st.markdown("### Filtros")
-    col_f1, col_f2, col_f3 = st.columns(3)
-
-    with col_f1:
-        opts = load_filter_options()
-        platforms_display = {p: platform_label(p) for p in opts["platforms"]}
-        sel_platforms = st.multiselect(
-            "Plataforma",
-            options=list(platforms_display.keys()),
-            format_func=lambda x: platforms_display[x],
-            default=list(platforms_display.keys()),
-            key="art510_plat",
+        cat_counts.columns = ["Grupo protegido (estimado)", "Cantidad"]
+        fig_cat = px.pie(
+            cat_counts, names="Grupo protegido (estimado)", values="Cantidad",
+            title="Candidatos por grupo protegido Art. 510",
+            hole=0.4,
+            color_discrete_sequence=CAT_COLORS,
         )
+        fig_cat.update_layout(height=400)
+        st.plotly_chart(fig_cat, use_container_width=True)
 
-    with col_f2:
-        sel_sources = st.multiselect(
-            "Fuente de etiquetado",
-            options=list(LABEL_SOURCE_LABELS.keys()),
-            format_func=lambda x: LABEL_SOURCE_LABELS[x],
-            default=list(LABEL_SOURCE_LABELS.keys()),
-            key="art510_source",
-        )
+    with col_g2:
+        if len(df["platform_label"].unique()) > 0 and len(df["source_label"].unique()) > 0:
+            grouped = (
+                df.groupby(["platform_label", "source_label"])
+                .size()
+                .reset_index(name="Cantidad")
+            )
+            fig_gr = px.bar(
+                grouped, x="platform_label", y="Cantidad",
+                color="source_label",
+                barmode="group",
+                title="Candidatos por plataforma y fuente",
+                labels={"platform_label": "Plataforma", "source_label": "Fuente"},
+                color_discrete_map={
+                    "Etiquetado LLM": COLORS["accent"],
+                    "Etiquetado humano": COLORS["success"],
+                },
+            )
+            fig_gr.update_layout(height=400)
+            st.plotly_chart(fig_gr, use_container_width=True)
 
-    with col_f3:
-        solo_delitos = st.checkbox(
-            "Solo potenciales delitos",
-            value=True,
-            key="art510_solo_delitos",
-        )
+    # ── Tabla pivot ──
+    st.markdown("---")
+    st.markdown("### Vista agrupada")
+    pivot = pd.crosstab(
+        df["platform_label"],
+        df["source_label"],
+        margins=True,
+        margins_name="Total",
+    )
+    st.dataframe(pivot, use_container_width=True)
 
-    if not sel_platforms or not sel_sources:
-        st.warning("Selecciona al menos una plataforma y una fuente de etiquetado.")
-        return
+    # ── Intensidad ──
+    int_counts = (
+        df["intensidad"]
+        .astype(str)
+        .value_counts()
+        .reindex(["1", "2", "3"], fill_value=0)
+        .reset_index()
+    )
+    int_counts.columns = ["Intensidad", "Cantidad"]
+    int_labels = {"1": "Leve", "2": "Ofensivo", "3": "Hostil/Incitación"}
+    int_counts["Nivel"] = int_counts["Intensidad"].map(int_labels)
+    fig_int = px.bar(
+        int_counts, x="Nivel", y="Cantidad",
+        color="Nivel",
+        color_discrete_map={
+            "Leve": COLORS["muted"],
+            "Ofensivo": COLORS["warning"],
+            "Hostil/Incitación": COLORS["danger"],
+        },
+        title="Distribución por intensidad (los de intensidad 3 son los más relevantes para Art. 510)",
+    )
+    fig_int.update_layout(height=350, showlegend=False)
+    st.plotly_chart(fig_int, use_container_width=True)
 
+    # ── Tabla detalle ──
+    st.markdown("---")
+    st.markdown("### Detalle de candidatos")
+    display_cols = [
+        "content_original", "platform_label", "source_label",
+        "categoria_label", "grupo_protegido_estimado", "intensidad",
+        "motivo_etiquetado",
+    ]
+    rename_map = {
+        "content_original": "Mensaje",
+        "platform_label": "Plataforma",
+        "source_label": "Fuente",
+        "categoria_label": "Categoría de odio",
+        "grupo_protegido_estimado": "Grupo protegido (Art. 510)",
+        "intensidad": "Intensidad",
+        "motivo_etiquetado": "Motivo",
+    }
+    df_display = df[display_cols].rename(columns=rename_map)
+    st.dataframe(df_display, use_container_width=True, hide_index=True, height=500)
+
+
+def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
+    """Vista completa con evaluaciones LLM Art. 510 ya procesadas."""
     df = load_art510_data(
         platforms=tuple(sel_platforms) if sel_platforms else None,
         label_sources=tuple(sel_sources) if sel_sources else None,
@@ -1965,7 +2147,6 @@ def render_analisis_art510():
     k5.metric("Art. 510.1b", f"{n_1b:,}")
     k6.metric("Art. 510.1c", f"{n_1c:,}")
 
-    # ── Validación humana badge ──
     validated = summary["total_validados"]
     if validated > 0:
         st.caption(f"Validaciones humanas realizadas: {validated:,}")
@@ -2028,7 +2209,7 @@ def render_analisis_art510():
 
     if not df_delitos.empty:
         tab_pivot, tab_conf, tab_detail = st.tabs(
-            ["Plataforma × Etiquetado", "Nivel de confianza", "Detalle mensajes"]
+            ["Plataforma x Etiquetado", "Nivel de confianza", "Detalle mensajes"]
         )
 
         with tab_pivot:
@@ -2098,7 +2279,68 @@ def render_analisis_art510():
             df_display = df_delitos[display_cols].rename(columns=rename_map)
             st.dataframe(df_display, use_container_width=True, hide_index=True, height=500)
 
-    # ── Nota legal ──
+
+def render_analisis_art510():
+    """Sección 7: Análisis de mensajes bajo el Art. 510.1 del Código Penal."""
+    st.header("Análisis Art. 510 — Potenciales delitos de odio")
+    st.caption(
+        "Evaluación de mensajes etiquetados como odio bajo el criterio del "
+        "artículo 510.1 del Código Penal español (excluyendo apartado 2). "
+        "Conductas: incitación (1a), distribución de material (1b), "
+        "negación/trivialización de genocidio (1c)."
+    )
+
+    # ── Filtros (siempre visibles) ──
+    st.markdown("### Filtros")
+    opts = load_filter_options()
+    platforms_display = {p: platform_label(p) for p in opts["platforms"]}
+
+    summary = load_art510_summary()
+    has_evaluations = summary["total_evaluados"] > 0
+
+    if has_evaluations:
+        col_f1, col_f2, col_f3 = st.columns(3)
+    else:
+        col_f1, col_f2 = st.columns(2)
+
+    with col_f1:
+        sel_platforms = st.multiselect(
+            "Plataforma",
+            options=list(platforms_display.keys()),
+            format_func=lambda x: platforms_display[x],
+            default=list(platforms_display.keys()),
+            key="art510_plat",
+        )
+
+    with col_f2:
+        sel_sources = st.multiselect(
+            "Fuente de etiquetado",
+            options=list(LABEL_SOURCE_LABELS.keys()),
+            format_func=lambda x: LABEL_SOURCE_LABELS[x],
+            default=list(LABEL_SOURCE_LABELS.keys()),
+            key="art510_source",
+        )
+
+    solo_delitos = False
+    if has_evaluations:
+        with col_f3:
+            solo_delitos = st.checkbox(
+                "Solo potenciales delitos",
+                value=True,
+                key="art510_solo_delitos",
+            )
+
+    if not sel_platforms or not sel_sources:
+        st.warning("Selecciona al menos una plataforma y una fuente de etiquetado.")
+        return
+
+    # ── Renderizar vista según disponibilidad de datos ──
+    if has_evaluations:
+        _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos)
+    else:
+        _render_art510_preview(sel_platforms, sel_sources)
+
+    # ── Nota legal (siempre visible) ──
     st.markdown("---")
     with st.expander("Nota sobre el Art. 510.3 (agravante por difusión en internet)"):
         st.markdown(
@@ -3100,11 +3342,22 @@ def _render_validacion_art510(annotator: str):
     queue = _load_v510_queue()
 
     if queue.empty:
-        st.success("No hay mensajes Art. 510 pendientes de validación.")
-        st.caption(
-            "Si esperabas mensajes, verifica que se haya ejecutado "
-            "`evaluar_art510.py` para generar las evaluaciones."
-        )
+        summary = load_art510_summary()
+        if summary["total_evaluados"] == 0:
+            st.info(
+                "Aún no se ha ejecutado `evaluar_art510.py`. "
+                "Una vez que se evalúen los mensajes de odio bajo el criterio del "
+                "Art. 510.1, aparecerán aquí los que requieran validación humana."
+            )
+            # Mostrar preview de cuántos candidatos hay
+            df_preview = load_art510_candidates()
+            if not df_preview.empty:
+                st.caption(
+                    f"Hay **{len(df_preview):,}** mensajes candidatos a evaluar "
+                    f"(visibles en la sección *Análisis Art. 510*)."
+                )
+        else:
+            st.success("No hay mensajes Art. 510 pendientes de validación.")
         if st.button("Limpiar saltos Art. 510 y recargar", key="v510_clear"):
             st.session_state["v510_skipped"] = set()
             st.rerun()
