@@ -1779,37 +1779,26 @@ def _get_openai_api_key() -> str:
     """Intenta obtener la API key de OpenAI desde múltiples fuentes."""
     import os as _os
 
-    # 1. Variable de entorno directa
-    key = (_os.environ.get("OPENAI_API_KEY") or "").strip()
-    if key:
-        return _clean_api_key(key)
-
-    # 2. st.secrets — probar múltiples formatos
+    # 1. st.secrets — acceso directo (top-level: OPENAI_API_KEY = "sk-...")
     try:
-        # Formato: [openai] \n api_key = "sk-..."
-        sec = st.secrets.get("openai", {})
-        if hasattr(sec, "get"):
-            key = (sec.get("api_key") or sec.get("API_KEY") or "").strip()
-            if key:
-                return _clean_api_key(key)
-    except Exception:
-        pass
-
-    try:
-        # Formato top-level: OPENAI_API_KEY = "sk-..."
-        key = (st.secrets.get("OPENAI_API_KEY") or "").strip()
+        key = str(st.secrets["OPENAI_API_KEY"])
         if key:
             return _clean_api_key(key)
     except Exception:
         pass
 
+    # 2. st.secrets — formato sección: [openai] api_key = "sk-..."
     try:
-        # Acceso directo (Streamlit Cloud a veces lo requiere)
-        key = st.secrets["OPENAI_API_KEY"]
+        key = str(st.secrets["openai"]["api_key"])
         if key:
-            return _clean_api_key(str(key))
+            return _clean_api_key(key)
     except Exception:
         pass
+
+    # 3. Variable de entorno
+    key = (_os.environ.get("OPENAI_API_KEY") or "").strip()
+    if key:
+        return _clean_api_key(key)
 
     return ""
 
