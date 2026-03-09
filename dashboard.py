@@ -1861,6 +1861,86 @@ MENSAJE:
 _ART510_APARTADOS_VALIDOS = {"1a", "1b", "1c"}
 _ART510_CONFIANZA_VALIDOS = {"alta", "media", "baja"}
 
+_MAX_FEEDBACK_EXAMPLES = 15
+
+
+@st.cache_data(ttl=600)
+def _art510_load_feedback_examples() -> str:
+    """Carga correcciones y rechazos humanos como bloque few-shot para el prompt.
+
+    Prioriza rechazos (falsos positivos) y correcciones (apartado/grupo incorrecto)
+    porque son los errores más valiosos de los que el LLM puede aprender.
+    Devuelve un string listo para inyectar en el prompt, o cadena vacía si no hay feedback.
+    """
+    import json as _json
+
+    query = """
+        SELECT pm.content_original,
+               ea.es_potencial_delito  AS llm_delito,
+               ea.apartado_510         AS llm_apartado,
+               ea.grupo_protegido      AS llm_grupo,
+               ea.conducta_detectada   AS llm_conducta,
+               v.validacion_humana,
+               v.apartado_510_final,
+               v.grupo_protegido_final,
+               v.conducta_final,
+               v.comentario
+        FROM processed.validacion_art510_humana v
+        JOIN processed.evaluacion_art510 ea
+             USING (message_uuid, label_source)
+        JOIN processed.mensajes pm
+             USING (message_uuid)
+        WHERE v.validacion_humana IN ('rechazado', 'corregido')
+        ORDER BY v.annotation_date DESC
+        LIMIT %s
+    """
+    try:
+        with get_conn() as conn:
+            df = pd.read_sql(query, conn, params=[_MAX_FEEDBACK_EXAMPLES * 2])
+    except Exception:
+        return ""
+
+    if df.empty:
+        return ""
+
+    rejected = df[df["validacion_humana"] == "rechazado"]
+    corrected = df[df["validacion_humana"] == "corregido"]
+
+    examples = []
+
+    for _, row in rejected.head(_MAX_FEEDBACK_EXAMPLES // 2).iterrows():
+        msg_preview = str(row["content_original"])[:200]
+        examples.append(
+            f"EJEMPLO (FALSO POSITIVO — el LLM clasificó como delito pero NO lo es):\n"
+            f"Mensaje: \"{msg_preview}\"\n"
+            f"LLM dijo: delito={row['llm_delito']}, apartado={row['llm_apartado']}, "
+            f"grupo={row['llm_grupo']}\n"
+            f"Corrección humana: NO es delito."
+            + (f" Motivo: {row['comentario']}" if row.get("comentario") else "")
+        )
+
+    for _, row in corrected.head(_MAX_FEEDBACK_EXAMPLES - len(examples)).iterrows():
+        msg_preview = str(row["content_original"])[:200]
+        examples.append(
+            f"EJEMPLO (CORRECCIÓN — el LLM clasificó incorrectamente):\n"
+            f"Mensaje: \"{msg_preview}\"\n"
+            f"LLM dijo: apartado={row['llm_apartado']}, grupo={row['llm_grupo']}, "
+            f"conducta={row['llm_conducta']}\n"
+            f"Corrección humana: apartado={row['apartado_510_final']}, "
+            f"grupo={row['grupo_protegido_final']}, conducta={row['conducta_final']}"
+            + (f" Nota: {row['comentario']}" if row.get("comentario") else "")
+        )
+
+    if not examples:
+        return ""
+
+    header = (
+        "\n\n--- FEEDBACK DE VALIDACIONES HUMANAS ---\n"
+        "Los siguientes son errores detectados por validadores humanos en evaluaciones "
+        "anteriores. Úsalos para calibrar tu criterio y evitar errores similares:\n\n"
+    )
+    return header + "\n\n".join(examples) + "\n--- FIN FEEDBACK ---\n"
+
 
 def _art510_extract_json(text: str) -> dict:
     """Extrae JSON del output del LLM de forma robusta."""
@@ -1879,8 +1959,11 @@ def _art510_extract_json(text: str) -> dict:
     return _json.loads(t)
 
 
-def _art510_eval_single(client, model: str, txt: str) -> dict:
+def _art510_eval_single(client, model: str, txt: str, feedback: str = "") -> dict:
     """Evalúa un mensaje bajo Art. 510.1 y devuelve dict normalizado.
+
+    Args:
+        feedback: bloque de ejemplos few-shot generado por _art510_load_feedback_examples().
 
     Raises:
         openai.AuthenticationError (re-raised to stop the batch).
@@ -1893,6 +1976,8 @@ def _art510_eval_single(client, model: str, txt: str) -> dict:
 
     for attempt in range(2):
         user_content = _ART510_USER_TMPL.format(txt=txt)
+        if feedback:
+            user_content = user_content + feedback
         if attempt > 0:
             user_content = "IMPORTANTE: devolvé SOLO JSON válido. Sin texto extra.\n\n" + user_content
 
@@ -2490,6 +2575,10 @@ def _render_art510_preview(sel_platforms, sel_sources):
         n_delitos = 0
         total_in_db = total_already
 
+        feedback = _art510_load_feedback_examples()
+        if feedback:
+            st.caption("Feedback humano cargado: el LLM usará correcciones anteriores para calibrar su criterio.")
+
         progress = st.progress(0, text="Iniciando evaluación...")
         status = st.empty()
 
@@ -2497,7 +2586,7 @@ def _render_art510_preview(sel_platforms, sel_sources):
             for i, r in enumerate(batch_to_process):
                 txt = str(r.get("content_original", "")).strip()
                 if txt:
-                    evaluation = _art510_eval_single(client, model, txt)
+                    evaluation = _art510_eval_single(client, model, txt, feedback=feedback)
                 else:
                     evaluation = {
                         "es_potencial_delito": False, "apartado_510": "",
@@ -2793,6 +2882,11 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
                 unsaved_buf = []
                 n_delitos = 0
                 total_in_db = len(already_done)
+
+                feedback = _art510_load_feedback_examples()
+                if feedback:
+                    st.caption("Feedback humano cargado para calibrar las evaluaciones.")
+
                 progress = st.progress(0, text="Evaluando...")
                 status_full = st.empty()
 
@@ -2800,7 +2894,7 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
                     for i, r in enumerate(batch):
                         txt = str(r.get("content_original", "")).strip()
                         if txt:
-                            ev = _art510_eval_single(client, model, txt)
+                            ev = _art510_eval_single(client, model, txt, feedback=feedback)
                         else:
                             ev = {
                                 "es_potencial_delito": False, "apartado_510": "",
@@ -3951,9 +4045,13 @@ def _render_validacion_art510(annotator: str):
             "contenido_510", value=str(msg["content_original"]),
             height=150, disabled=True, label_visibility="collapsed",
         )
-        plat = platform_label(str(msg.get("platform", "")))
-        medio = msg.get("source_media") or "—"
-        st.caption(f"Plataforma: **{plat}** · Medio: **{medio}**")
+        plat_raw = str(msg.get("platform", ""))
+        plat = platform_label(plat_raw)
+        if plat_raw == "youtube":
+            medio = msg.get("source_media") or "—"
+            st.caption(f"Plataforma: **{plat}** · Medio: **{medio}**")
+        else:
+            st.caption(f"Plataforma: **{plat}**")
 
     with col_eval:
         st.markdown("**Evaluación del LLM:**")
