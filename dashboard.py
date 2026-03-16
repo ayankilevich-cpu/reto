@@ -53,6 +53,8 @@ CATEGORIAS_LABELS = {
     "odio_profesiones_roles_publicos": "Profesiones / Roles Públicos",
 }
 
+EXCLUDED_SOURCE_MEDIA = {"grok", "Podcast"}
+
 COLORS = {
     "primary": "#1F4E79",
     "accent": "#4F81BD",
@@ -137,9 +139,11 @@ def load_filter_options() -> dict:
         medios = pd.read_sql(
             "SELECT source_media FROM processed.mensajes "
             "WHERE source_media IS NOT NULL AND source_media != '' "
+            "  AND source_media NOT IN %s "
             "GROUP BY source_media "
             "HAVING COUNT(*) >= 100 "
-            "ORDER BY source_media", conn
+            "ORDER BY source_media", conn,
+            params=[tuple(EXCLUDED_SOURCE_MEDIA)],
         )["source_media"].tolist()
 
         prioridades = pd.read_sql(
@@ -233,14 +237,17 @@ def load_kpis(
         total_odio_llm = row2[1] or 0
 
         # medios count (solo medios reales con >= 100 mensajes)
+        _excl_params = [tuple(EXCLUDED_SOURCE_MEDIA)]
+        _excl_cond = " AND source_media NOT IN %s"
         cur.execute(
             "SELECT count(*) FROM ("
             "  SELECT source_media FROM processed.mensajes "
             "  WHERE source_media IS NOT NULL AND source_media != ''"
+            + _excl_cond
             + (f" AND platform IN %s" if platforms else "")
             + "  GROUP BY source_media HAVING COUNT(*) >= 100"
             ") sub",
-            [tuple(platforms)] if platforms else [],
+            _excl_params + ([tuple(platforms)] if platforms else []),
         )
         total_medios = cur.fetchone()[0]
 
@@ -404,8 +411,9 @@ def load_ranking_medios(
 ) -> pd.DataFrame:
     platforms = list(platforms) if platforms else None
 
-    conds = ["pm.source_media IS NOT NULL AND pm.source_media != ''"]
-    params: list = []
+    conds = ["pm.source_media IS NOT NULL AND pm.source_media != ''",
+             "pm.source_media NOT IN %s"]
+    params: list = [tuple(EXCLUDED_SOURCE_MEDIA)]
     if platforms:
         conds.append("pm.platform IN %s"); params.append(tuple(platforms))
 
