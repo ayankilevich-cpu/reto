@@ -618,6 +618,11 @@ def render_sidebar():
         st.cache_data.clear()
         st.rerun()
 
+    eu_logo = Path(__file__).parent / "logos" / "07_eu.png"
+    if eu_logo.exists():
+        st.sidebar.markdown("---")
+        st.sidebar.image(str(eu_logo), use_container_width=True)
+
     return section
 
 
@@ -4522,7 +4527,6 @@ _LOGOS_ORDER = [
     ("04_cppa.png", "Colegio Profesional de Periodistas de Andalucía"),
     ("05_coe.png", "Comité Olímpico Español"),
     ("06_mci.png", "Movimiento Contra la Intolerancia"),
-    ("07_eu.png", "Co-funded by the European Union"),
 ]
 
 
