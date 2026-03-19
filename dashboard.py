@@ -406,17 +406,10 @@ def load_intensidad_por_categoria(
 
 
 @st.cache_data(ttl=300)
-def load_ranking_medios(
-    platforms: Optional[Tuple] = None,
-) -> pd.DataFrame:
-    platforms = list(platforms) if platforms else None
-
+def _load_ranking_medios_raw(min_msgs: int = 100) -> pd.DataFrame:
     conds = ["pm.source_media IS NOT NULL AND pm.source_media != ''",
              "pm.source_media NOT IN %s"]
     params: list = [tuple(EXCLUDED_SOURCE_MEDIA)]
-    if platforms:
-        conds.append("pm.platform IN %s"); params.append(tuple(platforms))
-
     where = " AND ".join(conds)
 
     with get_conn() as conn:
@@ -445,9 +438,20 @@ def load_ranking_medios(
             LEFT JOIN processed.gold_dataset g USING (message_uuid)
             WHERE {where}
             GROUP BY pm.source_media, pm.platform
-            HAVING COUNT(DISTINCT pm.message_uuid) >= 100
+            HAVING COUNT(DISTINCT pm.message_uuid) >= {int(min_msgs)}
             ORDER BY total_mensajes DESC
         """, conn, params=params)
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_ranking_medios(
+    platforms: Optional[Tuple] = None,
+) -> pd.DataFrame:
+    df = _load_ranking_medios_raw(min_msgs=100)
+    if platforms:
+        platforms_list = list(platforms)
+        df = df[df["platform"].isin(platforms_list)]
     return df
 
 
@@ -1037,6 +1041,115 @@ def _render_ranking_simple(df: pd.DataFrame, top_n: int, key_suffix: str):
     )
 
 
+def _render_explorar_medio():
+    """Pestaña exploratoria: seleccionar un medio y plataforma para ver sus métricas."""
+    st.markdown("Seleccioná un medio y una plataforma para ver sus métricas de odio.")
+
+    df_explore = _load_ranking_medios_raw(min_msgs=1)
+    if df_explore.empty:
+        st.warning("No hay datos de medios.")
+        return
+    df_explore = _prepare_ranking_df(df_explore)
+
+    sum_cols = [
+        "total_mensajes", "candidatos_dict", "odio_baseline",
+        "odio_llm", "odio_gold", "odio_cualquiera",
+    ]
+    agg_dict = {c: "sum" for c in sum_cols}
+    df_consol = df_explore.groupby("source_media", as_index=False).agg(agg_dict)
+    df_consol["platform"] = "consolidado"
+    df_consol = _prepare_ranking_df(df_consol)
+    df_full = pd.concat([df_explore, df_consol], ignore_index=True)
+
+    all_medios = sorted(df_full["source_media"].unique())
+
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        medio_sel = st.selectbox(
+            "Medio", all_medios,
+            index=0, key="explore_medio_sel",
+        )
+    with col_f2:
+        plat_opts = ["Consolidado", "X", "YouTube"]
+        plat_sel = st.selectbox(
+            "Plataforma", plat_opts,
+            index=0, key="explore_plat_sel",
+        )
+
+    plat_map = {"Consolidado": "consolidado", "X": "x", "YouTube": "youtube"}
+    plat_key = plat_map[plat_sel]
+
+    row = df_full[
+        (df_full["source_media"] == medio_sel) & (df_full["platform"] == plat_key)
+    ]
+
+    if row.empty:
+        st.info(f"No hay datos de **{medio_sel}** en **{plat_sel}**.")
+        return
+
+    r = row.iloc[0]
+    total = int(r["total_mensajes"])
+    odio = int(r["odio_cualquiera"])
+    pct = round(odio / max(total, 1) * 100, 1)
+
+    st.markdown("---")
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Total mensajes", f"{total:,}")
+    k2.metric("Mensajes con odio", f"{odio:,}")
+    k3.metric("% Odio", f"{pct}%")
+
+    st.markdown("---")
+
+    detail_data = {
+        "Métrica": [
+            "Candidatos (diccionario)",
+            "Odio — Baseline",
+            "Odio — LLM",
+            "Odio — Gold (validado)",
+            "Odio — Cualquier fuente",
+            "Score promedio (baseline)",
+        ],
+        "Cantidad": [
+            int(r["candidatos_dict"]),
+            int(r["odio_baseline"]),
+            int(r["odio_llm"]),
+            int(r["odio_gold"]),
+            odio,
+            r["score_promedio"] if pd.notna(r.get("score_promedio")) else "—",
+        ],
+        "% del total": [
+            f"{r['pct_dict']}%",
+            f"{r['pct_odio_baseline']}%",
+            f"{r['pct_odio_llm']}%",
+            f"{r['pct_odio_gold']}%",
+            f"{pct}%",
+            "—",
+        ],
+    }
+    st.dataframe(
+        pd.DataFrame(detail_data),
+        use_container_width=True, hide_index=True,
+        key="explore_detail_table",
+    )
+
+    plats_disponibles = df_explore[df_explore["source_media"] == medio_sel]["platform"].unique()
+    if len(plats_disponibles) > 1:
+        plat_data = df_explore[df_explore["source_media"] == medio_sel].copy()
+        plat_data["plataforma"] = plat_data["platform"].map(PLATFORM_DISPLAY).fillna(plat_data["platform"])
+        fig = px.bar(
+            plat_data, x="plataforma", y=["total_mensajes", "odio_cualquiera"],
+            barmode="group",
+            labels={"value": "Mensajes", "variable": "", "plataforma": ""},
+            title=f"{medio_sel} — Comparativa por plataforma",
+        )
+        fig.update_layout(height=350)
+        fig.for_each_trace(lambda t: t.update(
+            name="Total" if "total" in t.name else "Odio"
+        ))
+        st.plotly_chart(fig, use_container_width=True, key="explore_plat_chart")
+
+
 def render_ranking_medios():
     st.title("Ranking de medios")
     st.markdown("Top 10 medios de comunicación por volumen de mensajes y porcentaje de odio.")
@@ -1062,7 +1175,7 @@ def render_ranking_medios():
     df_consol["platform"] = "consolidado"
     df_consol = _prepare_ranking_df(df_consol)
 
-    tab_all, tab_x, tab_yt = st.tabs(["Consolidado", "X", "YouTube"])
+    tab_all, tab_x, tab_yt, tab_explore = st.tabs(["Consolidado", "X", "YouTube", "Explorar medio"])
 
     with tab_all:
         _render_ranking_simple(df_consol, top_n, "all")
@@ -1078,6 +1191,9 @@ def render_ranking_medios():
             st.info("No hay datos de medios en YouTube.")
         else:
             _render_ranking_simple(df_yt, top_n, "yt")
+
+    with tab_explore:
+        _render_explorar_medio()
 
 
 def render_comparativa():
