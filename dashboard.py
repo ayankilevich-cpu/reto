@@ -1096,7 +1096,8 @@ def _render_explorar_medio():
     df_consol = _prepare_ranking_df(df_consol)
     df_full = pd.concat([df_explore, df_consol], ignore_index=True)
 
-    all_medios = sorted(df_full["source_media"].unique())
+    _TODOS = "Todos"
+    all_medios = [_TODOS] + sorted(df_full["source_media"].unique())
 
     col_f1, col_f2 = st.columns(2)
     with col_f1:
@@ -1113,6 +1114,67 @@ def _render_explorar_medio():
 
     plat_map = {"Consolidado": "consolidado", "X": "x", "YouTube": "youtube"}
     plat_key = plat_map[plat_sel]
+
+    if medio_sel == _TODOS:
+        if plat_key == "consolidado":
+            agg_row = df_consol[num_cols].sum()
+        else:
+            plat_slice = df_explore[df_explore["platform"] == plat_key]
+            if plat_slice.empty:
+                st.info(f"No hay datos en **{plat_sel}**.")
+                return
+            agg_row = plat_slice[num_cols].sum()
+        total = int(agg_row["total_mensajes"])
+        odio = int(agg_row["odio_cualquiera"])
+        pct = round(odio / max(total, 1) * 100, 1)
+
+        st.markdown("---")
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Total mensajes", f"{total:,}")
+        k2.metric("Mensajes con odio", f"{odio:,}")
+        k3.metric("% Odio", f"{pct}%")
+
+        st.markdown("---")
+        detail_data = {
+            "Métrica": [
+                "Candidatos (diccionario)",
+                "Odio — Baseline",
+                "Odio — LLM",
+                "Odio — Gold (validado)",
+                "Odio — Cualquier fuente",
+            ],
+            "Cantidad": [
+                int(agg_row["candidatos_dict"]),
+                int(agg_row["odio_baseline"]),
+                int(agg_row["odio_llm"]),
+                int(agg_row["odio_gold"]),
+                odio,
+            ],
+            "% del total": [
+                f"{round(agg_row['candidatos_dict'] / max(total, 1) * 100, 1)}%",
+                f"{round(agg_row['odio_baseline'] / max(total, 1) * 100, 1)}%",
+                f"{round(agg_row['odio_llm'] / max(total, 1) * 100, 1)}%",
+                f"{round(agg_row['odio_gold'] / max(total, 1) * 100, 1)}%",
+                f"{pct}%",
+            ],
+        }
+        st.dataframe(
+            pd.DataFrame(detail_data),
+            use_container_width=True, hide_index=True,
+            key="explore_detail_table",
+        )
+
+        if plat_key == "consolidado":
+            top_medios = df_consol.sort_values("total_mensajes", ascending=False).head(15)
+            fig = px.bar(
+                top_medios, x="total_mensajes", y="source_media", orientation="h",
+                color="pct_odio_any", color_continuous_scale="Reds",
+                labels={"total_mensajes": "Total mensajes", "source_media": "", "pct_odio_any": "% Odio"},
+                title="Top 15 medios reconocidos — Volumen (color = % Odio)",
+            )
+            fig.update_layout(height=500, yaxis=dict(autorange="reversed"))
+            st.plotly_chart(fig, use_container_width=True, key="explore_todos_chart")
+        return
 
     row = df_full[
         (df_full["source_media"] == medio_sel) & (df_full["platform"] == plat_key)
