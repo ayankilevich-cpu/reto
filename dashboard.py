@@ -19,10 +19,11 @@ Uso:
 from __future__ import annotations
 
 import base64
+import re
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 import plotly.express as px
@@ -79,6 +80,27 @@ PLATFORM_DISPLAY = {
 def platform_label(val: str) -> str:
     """Convierte el valor interno de plataforma a su nombre visible."""
     return PLATFORM_DISPLAY.get(val, val)
+
+
+_EXCEL_MEDIOS_PATH = Path(__file__).resolve().parent.parent / "Medios" / "Medios_Andalucia_Web_Redes_Final.xlsx"
+
+
+@st.cache_data(ttl=3600)
+def _load_valid_media_map() -> Tuple[Set[str], Dict[str, str]]:
+    """Carga el Excel maestro de medios y devuelve:
+    - valid_names: set con los nombres oficiales de medios
+    - handle_to_name: dict que mapea handle de X -> nombre oficial
+    """
+    df = pd.read_excel(str(_EXCEL_MEDIOS_PATH))
+    valid_names: Set[str] = set(df["Medio"].dropna().str.strip().unique())
+
+    handle_to_name: Dict[str, str] = {}
+    for _, row in df.dropna(subset=["X"]).iterrows():
+        m = re.search(r"(?:x\.com|twitter\.com)/([^/?]+)", str(row["X"]))
+        if m:
+            handle_to_name[m.group(1)] = str(row["Medio"]).strip()
+
+    return valid_names, handle_to_name
 
 
 # ============================================================
@@ -1045,18 +1067,37 @@ def _render_explorar_medio():
     """Pestaña exploratoria: seleccionar un medio y plataforma para ver sus métricas."""
     st.markdown("Seleccioná un medio y una plataforma para ver sus métricas de odio.")
 
-    df_explore = _load_ranking_medios_raw(min_msgs=1)
-    if df_explore.empty:
+    valid_names, handle_to_name = _load_valid_media_map()
+
+    df_raw = _load_ranking_medios_raw(min_msgs=1)
+    if df_raw.empty:
         st.warning("No hay datos de medios.")
         return
-    df_explore = _prepare_ranking_df(df_explore)
 
-    sum_cols = [
+    df_raw = df_raw.copy()
+    df_raw["source_media"] = df_raw["source_media"].map(
+        lambda sm: handle_to_name.get(sm, sm)
+    )
+
+    df_explore = df_raw[df_raw["source_media"].isin(valid_names)].copy()
+    if df_explore.empty:
+        st.warning("No hay datos de medios reconocidos.")
+        return
+
+    num_cols = [
         "total_mensajes", "candidatos_dict", "odio_baseline",
         "odio_llm", "odio_gold", "odio_cualquiera",
     ]
-    agg_dict = {c: "sum" for c in sum_cols}
-    df_consol = df_explore.groupby("source_media", as_index=False).agg(agg_dict)
+    agg_map = {c: "sum" for c in num_cols}
+    agg_map["score_promedio"] = "mean"
+    df_explore = df_explore.groupby(
+        ["source_media", "platform"], as_index=False,
+    ).agg(agg_map)
+    df_explore = _prepare_ranking_df(df_explore)
+
+    df_consol = df_explore.groupby("source_media", as_index=False).agg(
+        {c: "sum" for c in num_cols}
+    )
     df_consol["platform"] = "consolidado"
     df_consol = _prepare_ranking_df(df_consol)
     df_full = pd.concat([df_explore, df_consol], ignore_index=True)
