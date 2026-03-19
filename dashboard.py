@@ -19,7 +19,6 @@ Uso:
 from __future__ import annotations
 
 import base64
-import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -82,24 +81,19 @@ def platform_label(val: str) -> str:
     return PLATFORM_DISPLAY.get(val, val)
 
 
-_EXCEL_MEDIOS_PATH = Path(__file__).resolve().parent.parent / "Medios" / "Medios_Andalucia_Web_Redes_Final.xlsx"
+_MEDIOS_JSON_PATH = Path(__file__).resolve().parent / "medios_validos.json"
 
 
 @st.cache_data(ttl=3600)
 def _load_valid_media_map() -> Tuple[Set[str], Dict[str, str]]:
-    """Carga el Excel maestro de medios y devuelve:
-    - valid_names: set con los nombres oficiales de medios
-    - handle_to_name: dict que mapea handle de X -> nombre oficial
+    """Carga el JSON con los medios válidos y el mapeo handle → nombre.
+    El JSON se genera a partir del Excel maestro y se despliega junto a la app.
     """
-    df = pd.read_excel(str(_EXCEL_MEDIOS_PATH))
-    valid_names: Set[str] = set(df["Medio"].dropna().str.strip().unique())
-
-    handle_to_name: Dict[str, str] = {}
-    for _, row in df.dropna(subset=["X"]).iterrows():
-        m = re.search(r"(?:x\.com|twitter\.com)/([^/?]+)", str(row["X"]))
-        if m:
-            handle_to_name[m.group(1)] = str(row["Medio"]).strip()
-
+    import json
+    with open(_MEDIOS_JSON_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    valid_names: Set[str] = set(data["valid_names"])
+    handle_to_name: Dict[str, str] = data["handle_to_name"]
     return valid_names, handle_to_name
 
 
