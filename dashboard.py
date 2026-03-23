@@ -1343,34 +1343,43 @@ def render_analisis_contextual():
         st.warning("No hay datos de análisis semanal. Ejecutá `analisis_contexto_semanal.py` para generar el histórico.")
         return
 
-    df["semana_label"] = df["semana_inicio"].apply(
-        lambda d: d.strftime("%d/%m") if hasattr(d, "strftime") else str(d)
+    MIN_MSGS_CHART = 100
+    df_chart = df[df["total_mensajes"] >= MIN_MSGS_CHART].copy()
+
+    df_chart["semana_label"] = df_chart["semana_inicio"].apply(
+        lambda d: d.strftime("%d/%m/%y") if hasattr(d, "strftime") else str(d)
     )
 
     # --- Timeline ---
     st.subheader("Evolución semanal del % de odio")
 
-    avg_pct = float(df["pct_odio"].mean()) if not df.empty else 0
+    avg_pct = float(df_chart["pct_odio"].mean()) if not df_chart.empty else 0
     spike_threshold = avg_pct * 1.5
 
-    fig_timeline = go.Figure()
     colors = [
         COLORS["danger"] if row["es_spike"] else COLORS["accent"]
-        for _, row in df.iterrows()
+        for _, row in df_chart.iterrows()
     ]
+    text_labels = [
+        f"{row['pct_odio']}%" if row["es_spike"] or row["pct_odio"] >= avg_pct else ""
+        for _, row in df_chart.iterrows()
+    ]
+
+    fig_timeline = go.Figure()
     fig_timeline.add_trace(go.Bar(
-        x=df["semana_label"],
-        y=df["pct_odio"],
+        x=df_chart["semana_label"],
+        y=df_chart["pct_odio"],
         marker_color=colors,
-        text=df["pct_odio"].apply(lambda x: f"{x}%"),
+        text=text_labels,
         textposition="outside",
+        textfont=dict(size=11),
         hovertemplate=(
-            "Semana: %{x}<br>"
+            "<b>Semana %{x}</b><br>"
             "% Odio: %{y:.1f}%<br>"
-            "Total: %{customdata[0]:,}<br>"
-            "Odio: %{customdata[1]:,}<extra></extra>"
+            "Total: %{customdata[0]:,} mensajes<br>"
+            "Odio: %{customdata[1]:,} mensajes<extra></extra>"
         ),
-        customdata=df[["total_mensajes", "total_odio"]].values,
+        customdata=df_chart[["total_mensajes", "total_odio"]].values,
     ))
     fig_timeline.add_hline(
         y=avg_pct, line_dash="dash", line_color=COLORS["muted"],
@@ -1379,20 +1388,23 @@ def render_analisis_contextual():
     )
     fig_timeline.add_hline(
         y=spike_threshold, line_dash="dot", line_color=COLORS["danger"],
-        annotation_text=f"Spike: >{spike_threshold:.1f}%",
+        annotation_text=f"Umbral alerta: >{spike_threshold:.1f}%",
         annotation_position="top right",
     )
     fig_timeline.update_layout(
-        height=380,
-        xaxis_title="Semana (inicio)",
+        height=420,
+        xaxis_title="",
         yaxis_title="% Odio",
         showlegend=False,
+        xaxis=dict(tickangle=-45, tickfont=dict(size=10)),
+        margin=dict(b=80),
     )
     st.plotly_chart(fig_timeline, use_container_width=True, key="ctx_timeline")
 
     st.caption(
-        f"🔴 Barras rojas = semanas spike (>{spike_threshold:.1f}%) · "
-        f"🔵 Barras azules = semanas normales"
+        f"Barras rojas = semanas con alerta (>{spike_threshold:.1f}%) · "
+        f"Barras azules = semanas normales · "
+        f"Solo semanas con {MIN_MSGS_CHART}+ mensajes"
     )
 
     st.markdown("---")
@@ -1400,13 +1412,19 @@ def render_analisis_contextual():
     # --- Week selector ---
     st.subheader("Detalle semanal")
 
+    df_selectable = df[df["total_mensajes"] >= MIN_MSGS_CHART].copy()
+    if df_selectable.empty:
+        st.info("No hay semanas con suficientes datos para mostrar detalle.")
+        return
+
     week_options = []
-    for _, row in df.sort_values("semana_inicio", ascending=False).iterrows():
-        spike_mark = " ⚠️ SPIKE" if row["es_spike"] else ""
+    for _, row in df_selectable.sort_values("semana_inicio", ascending=False).iterrows():
+        spike_mark = " ⚠️ ALERTA" if row["es_spike"] else ""
         label = (
             f"{row['semana_inicio'].strftime('%d/%m/%Y')} — "
             f"{row['semana_fin'].strftime('%d/%m/%Y')}"
-            f" ({row['pct_odio']}% odio){spike_mark}"
+            f" | {int(row['total_mensajes']):,} msgs"
+            f" | {row['pct_odio']}% odio{spike_mark}"
         )
         week_options.append((label, row["semana_inicio"]))
 
@@ -1424,8 +1442,8 @@ def render_analisis_contextual():
     k1.metric("Total mensajes", f"{int(row['total_mensajes']):,}")
     k2.metric("Mensajes de odio", f"{int(row['total_odio']):,}")
     k3.metric("% Odio", f"{row['pct_odio']}%")
-    spike_label = "Sí ⚠️" if row["es_spike"] else "No"
-    k4.metric("Spike", spike_label)
+    alerta_label = "Sí ⚠️" if row["es_spike"] else "No"
+    k4.metric("Alerta", alerta_label)
 
     st.markdown("---")
 
