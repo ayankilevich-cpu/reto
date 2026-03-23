@@ -1533,10 +1533,15 @@ def render_analisis_contextual():
                     int_df, names="Nivel", values="Mensajes",
                     color="Nivel",
                     color_discrete_map={
-                        "Leve (ironía, burla)": COLORS["warning"],
+                        "Leve (ironía, burla)": "#F4D03F",
                         "Ofensivo (insultos)": "#E67E22",
-                        "Hostil (incitación)": COLORS["danger"],
+                        "Hostil (incitación)": "#C0392B",
                     },
+                )
+                fig_int.update_traces(
+                    textinfo="percent+label",
+                    textfont_size=12,
+                    marker=dict(line=dict(color="#FFFFFF", width=2)),
                 )
                 fig_int.update_layout(height=300)
                 st.plotly_chart(fig_int, use_container_width=True, key="ctx_intensidad")
