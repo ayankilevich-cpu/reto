@@ -76,10 +76,26 @@ PLATFORM_DISPLAY = {
     "youtube": "YouTube",
 }
 
+# "twitter" y "x" son la misma plataforma en distintas épocas de scraping
+_PLATFORM_ALIASES = {"x": ("x", "twitter"), "twitter": ("x", "twitter")}
+
 
 def platform_label(val: str) -> str:
     """Convierte el valor interno de plataforma a su nombre visible."""
     return PLATFORM_DISPLAY.get(val, val)
+
+
+def _expand_platforms(platforms: Optional[List[str]]) -> Optional[List[str]]:
+    """Expande aliases de plataforma para que 'x' incluya 'twitter' en SQL."""
+    if not platforms:
+        return platforms
+    expanded: set = set()
+    for p in platforms:
+        if p in _PLATFORM_ALIASES:
+            expanded.update(_PLATFORM_ALIASES[p])
+        else:
+            expanded.add(p)
+    return sorted(expanded)
 
 
 _MEDIOS_JSON_PATH = Path(__file__).resolve().parent / "medios_validos.json"
@@ -116,6 +132,7 @@ def build_where(
     conditions = []
     params = []
 
+    platforms = _expand_platforms(platforms)
     if platforms:
         conditions.append(f"{prefix}platform IN %s")
         params.append(tuple(platforms))
@@ -151,7 +168,11 @@ def load_filter_options() -> dict:
         platforms_raw = pd.read_sql(
             "SELECT DISTINCT platform FROM raw.mensajes WHERE platform IS NOT NULL ORDER BY platform", conn
         )["platform"].tolist()
-        platforms = platforms_raw
+        platforms = sorted({PLATFORM_DISPLAY.get(p, p) for p in platforms_raw})
+        platform_internal = sorted({
+            "x" if p in ("twitter", "x") else p for p in platforms_raw
+        })
+        platforms = platform_internal
 
         medios = pd.read_sql(
             "SELECT source_media FROM processed.mensajes "
@@ -191,7 +212,7 @@ def load_kpis(
     platforms: Optional[Tuple] = None,
     medios: Optional[Tuple] = None,
 ) -> dict:
-    platforms = list(platforms) if platforms else None
+    platforms = _expand_platforms(list(platforms) if platforms else None)
     medios = list(medios) if medios else None
 
     with get_conn() as conn:
@@ -354,7 +375,7 @@ def load_categorias(
     medios: Optional[Tuple] = None,
     intensidades: Optional[Tuple] = None,
 ) -> pd.DataFrame:
-    platforms = list(platforms) if platforms else None
+    platforms = _expand_platforms(list(platforms) if platforms else None)
     medios = list(medios) if medios else None
     intensidades = list(intensidades) if intensidades else None
 
@@ -391,7 +412,7 @@ def load_intensidad_por_categoria(
     medios: Optional[Tuple] = None,
     categorias: Optional[Tuple] = None,
 ) -> pd.DataFrame:
-    platforms = list(platforms) if platforms else None
+    platforms = _expand_platforms(list(platforms) if platforms else None)
     medios = list(medios) if medios else None
     categorias = list(categorias) if categorias else None
 
@@ -479,7 +500,7 @@ def load_comparativa(
     categorias: Optional[Tuple] = None,
     prioridades: Optional[Tuple] = None,
 ) -> pd.DataFrame:
-    platforms = list(platforms) if platforms else None
+    platforms = _expand_platforms(list(platforms) if platforms else None)
     medios = list(medios) if medios else None
     categorias = list(categorias) if categorias else None
     prioridades = list(prioridades) if prioridades else None
@@ -571,7 +592,7 @@ def load_terminos(
     solo_candidatos: bool = True,
     ultimas_horas: Optional[int] = None,
 ) -> pd.DataFrame:
-    platforms = list(platforms) if platforms else None
+    platforms = _expand_platforms(list(platforms) if platforms else None)
     medios = list(medios) if medios else None
     categorias = list(categorias) if categorias else None
 
@@ -854,7 +875,7 @@ def _load_panel_combined(
 
     Gold tiene prioridad: si un mensaje está en gold Y en LLM, se usa gold.
     """
-    platforms_l = list(platforms) if platforms else None
+    platforms_l = _expand_platforms(list(platforms) if platforms else None)
     medios_l = list(medios) if medios else None
 
     conds = [
@@ -2663,6 +2684,7 @@ def load_art510_data(
     """Carga datos de evaluación Art. 510 con filtros."""
     conditions = []
     params: list = []
+    platforms = _expand_platforms(list(platforms) if platforms else None)
 
     if solo_delitos:
         conditions.append("ea.es_potencial_delito = TRUE")
@@ -2759,6 +2781,7 @@ def load_art510_candidates(
     Mensajes ODIO cuya categoría mapea a grupos protegidos del Art. 510.
     Se usa como vista previa cuando aún no se ha ejecutado evaluar_art510.py.
     """
+    platforms = _expand_platforms(list(platforms) if platforms else None)
     dfs = []
 
     with get_conn() as conn:
