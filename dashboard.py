@@ -2766,13 +2766,64 @@ def load_art510_summary() -> dict:
             conn.rollback()
             total_validados = 0
 
+        total_confirmados = 0
+        total_rechazados = 0
+        try:
+            cur.execute("""
+                SELECT validacion_humana, COUNT(*)
+                FROM processed.validacion_art510_humana
+                GROUP BY validacion_humana
+            """)
+            for val, cnt in cur.fetchall():
+                if val == "confirmado":
+                    total_confirmados = cnt
+                elif val == "rechazado":
+                    total_rechazados = cnt
+        except Exception:
+            conn.rollback()
+
         cur.close()
 
     return {
         "total_evaluados": total_evaluados,
         "total_delitos": total_delitos,
         "total_validados": total_validados,
+        "total_confirmados": total_confirmados,
+        "total_rechazados": total_rechazados,
     }
+
+
+@st.cache_data(ttl=300)
+def load_art510_validaciones_humanas() -> pd.DataFrame:
+    """Carga validaciones humanas de Art. 510 cruzadas con la evaluación LLM."""
+    with get_conn() as conn:
+        df = pd.read_sql("""
+            SELECT
+                vh.message_uuid,
+                vh.validacion_humana,
+                vh.apartado_510_final,
+                vh.grupo_protegido_final,
+                vh.conducta_final,
+                vh.comentario,
+                vh.annotator_id,
+                vh.annotation_date,
+                ea.es_potencial_delito   AS llm_potencial_delito,
+                ea.apartado_510          AS llm_apartado,
+                ea.conducta_detectada    AS llm_conducta,
+                ea.grupo_protegido       AS llm_grupo,
+                ea.confianza             AS llm_confianza,
+                ea.justificacion         AS llm_justificacion,
+                pm.content_original,
+                pm.platform,
+                pm.source_media
+            FROM processed.validacion_art510_humana vh
+            LEFT JOIN processed.evaluacion_art510 ea USING (message_uuid)
+            LEFT JOIN processed.mensajes pm USING (message_uuid)
+            ORDER BY vh.validacion_humana DESC, vh.annotation_date DESC
+        """, conn)
+    if not df.empty:
+        df["platform_label"] = df["platform"].map(PLATFORM_DISPLAY).fillna(df["platform"])
+    return df
 
 
 @st.cache_data(ttl=300)
@@ -3175,6 +3226,110 @@ def _render_art510_preview(sel_platforms, sel_sources):
             st.rerun()
 
 
+def _render_art510_validacion_humana(summary: dict):
+    """Sub-sección: resultado de validaciones humanas Art. 510."""
+    total_val = summary.get("total_validados", 0)
+    if total_val == 0:
+        return
+
+    st.markdown("---")
+    st.markdown("### Validación humana")
+    st.markdown(
+        "Resultado de la revisión manual por expertos de los mensajes "
+        "pre-seleccionados por el LLM como potenciales delitos Art. 510."
+    )
+
+    confirmados = summary.get("total_confirmados", 0)
+    rechazados = summary.get("total_rechazados", 0)
+    tasa_precision = (confirmados / total_val * 100) if total_val else 0
+
+    v1, v2, v3, v4 = st.columns(4)
+    v1.metric("Revisados por humano", f"{total_val}")
+    v2.metric("Confirmados como delito", f"{confirmados}")
+    v3.metric("Rechazados", f"{rechazados}")
+    v4.metric("Precisión del LLM", f"{tasa_precision:.0f}%")
+
+    df_vh = load_art510_validaciones_humanas()
+    if df_vh.empty:
+        return
+
+    tab_conf, tab_rech, tab_all = st.tabs([
+        f"Confirmados ({confirmados})",
+        f"Rechazados ({rechazados})",
+        "Todos",
+    ])
+
+    with tab_conf:
+        df_c = df_vh[df_vh["validacion_humana"] == "confirmado"]
+        if df_c.empty:
+            st.info("No hay mensajes confirmados como delito.")
+        else:
+            for _, r in df_c.iterrows():
+                with st.container():
+                    st.markdown(f"> {r['content_original']}")
+                    c1, c2, c3 = st.columns(3)
+                    c1.markdown(f"**Apartado:** {r['apartado_510_final'] or '—'}")
+                    c2.markdown(f"**Grupo protegido:** {r['grupo_protegido_final'] or '—'}")
+                    c3.markdown(f"**Revisor:** {r['annotator_id'] or '—'}")
+                    if r.get("conducta_final"):
+                        st.markdown(f"**Conducta:** {r['conducta_final']}")
+                    if r.get("comentario"):
+                        st.markdown(f"**Comentario del experto:** {r['comentario']}")
+
+                    with st.expander("Comparar con evaluación LLM"):
+                        lc1, lc2, lc3 = st.columns(3)
+                        lc1.markdown(f"LLM apartado: `{r['llm_apartado'] or '—'}`")
+                        lc2.markdown(f"LLM grupo: `{r['llm_grupo'] or '—'}`")
+                        lc3.markdown(f"LLM confianza: `{r['llm_confianza'] or '—'}`")
+                        if r.get("llm_justificacion"):
+                            st.markdown(f"LLM justificación: {r['llm_justificacion']}")
+                    st.markdown("---")
+
+    with tab_rech:
+        df_r = df_vh[df_vh["validacion_humana"] == "rechazado"]
+        if df_r.empty:
+            st.info("No hay mensajes rechazados.")
+        else:
+            st.caption(
+                "Estos mensajes fueron evaluados como potencial delito por el LLM "
+                "pero descartados por el experto humano."
+            )
+            display_cols_r = ["content_original", "llm_confianza", "llm_grupo", "annotator_id"]
+            available = [c for c in display_cols_r if c in df_r.columns]
+            rename_r = {
+                "content_original": "Mensaje",
+                "llm_confianza": "Confianza LLM",
+                "llm_grupo": "Grupo (LLM)",
+                "annotator_id": "Revisor",
+            }
+            st.dataframe(
+                df_r[available].rename(columns=rename_r),
+                use_container_width=True, hide_index=True, height=400,
+            )
+
+    with tab_all:
+        all_cols = [
+            "validacion_humana", "content_original", "apartado_510_final",
+            "grupo_protegido_final", "conducta_final", "comentario",
+            "llm_confianza", "annotator_id",
+        ]
+        available_all = [c for c in all_cols if c in df_vh.columns]
+        rename_all = {
+            "validacion_humana": "Decisión humana",
+            "content_original": "Mensaje",
+            "apartado_510_final": "Apartado (humano)",
+            "grupo_protegido_final": "Grupo (humano)",
+            "conducta_final": "Conducta (humano)",
+            "comentario": "Comentario",
+            "llm_confianza": "Confianza LLM",
+            "annotator_id": "Revisor",
+        }
+        st.dataframe(
+            df_vh[available_all].rename(columns=rename_all),
+            use_container_width=True, hide_index=True, height=400,
+        )
+
+
 def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
     """Vista completa con evaluaciones LLM Art. 510 ya procesadas."""
     df = load_art510_data(
@@ -3207,10 +3362,6 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
     k4.metric("Art. 510.1a", f"{n_1a:,}")
     k5.metric("Art. 510.1b", f"{n_1b:,}")
     k6.metric("Art. 510.1c", f"{n_1c:,}")
-
-    validated = summary["total_validados"]
-    if validated > 0:
-        st.caption(f"Validaciones humanas realizadas: {validated:,}")
 
     if solo_delitos and len(df) < total_evaluados_db:
         st.caption(
@@ -3345,6 +3496,9 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
             }
             df_display = df_delitos[display_cols].rename(columns=rename_map)
             st.dataframe(df_display, use_container_width=True, hide_index=True, height=500)
+
+    # ── Validación humana ──
+    _render_art510_validacion_humana(summary)
 
     # ── Evaluar nuevos mensajes (expander discreto) ──
     already_done = _art510_get_already_evaluated()
