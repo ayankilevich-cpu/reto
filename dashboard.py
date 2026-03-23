@@ -1354,9 +1354,14 @@ def _parse_json_col(val) -> dict:
 def render_analisis_contextual():
     st.title("Análisis contextual semanal")
     st.markdown(
-        "Evolución semanal del discurso de odio con detección de **spikes**, "
+        "Evolución semanal del discurso de odio con detección de **alertas**, "
         "identificación de **targets** y **temas dominantes**, "
         "y análisis contextual generado por IA."
+    )
+    st.info(
+        "📌 Esta sección analiza exclusivamente mensajes de **X (Twitter)** "
+        "clasificados por el modelo **LLM**. YouTube no cuenta con clasificación "
+        "de odio por LLM en el pipeline actual."
     )
 
     df = load_analisis_semanal()
