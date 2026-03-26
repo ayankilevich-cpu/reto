@@ -1360,8 +1360,8 @@ def render_analisis_contextual():
     )
     st.info(
         "📌 Esta sección analiza exclusivamente mensajes de **X (Twitter)** "
-        "clasificados por el modelo **LLM**. YouTube no cuenta con clasificación "
-        "de odio por LLM en el pipeline actual."
+        "clasificados por el modelo **LLM**. Los datos de YouTube con "
+        "clasificación LLM se visualizan en la sección **Categorías de odio**."
     )
 
     df = load_analisis_semanal()
