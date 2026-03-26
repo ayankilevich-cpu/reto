@@ -348,24 +348,43 @@ def load_kpis(
 
 @st.cache_data(ttl=300)
 def load_llm_stats() -> dict:
-    """Total de mensajes procesados por LLM y agregados en la última actualización."""
+    """Total de mensajes procesados por LLM, desglosado por plataforma."""
     with get_conn() as conn:
         row = pd.read_sql("""
             SELECT
                 COUNT(*)                                           AS total_procesados,
-                MAX(etiquetado_date::date)                         AS ultima_fecha,
+                MAX(e.etiquetado_date::date)                       AS ultima_fecha,
                 COUNT(*) FILTER (
-                    WHERE etiquetado_date::date = (
+                    WHERE e.etiquetado_date::date = (
                         SELECT MAX(etiquetado_date::date)
                         FROM processed.etiquetas_llm
                     )
-                )                                                  AS agregados_ultima
-            FROM processed.etiquetas_llm
+                )                                                  AS agregados_ultima,
+                COUNT(*) FILTER (WHERE pm.platform IN ('x','twitter'))  AS total_x,
+                COUNT(*) FILTER (WHERE pm.platform = 'youtube')         AS total_yt,
+                COUNT(*) FILTER (
+                    WHERE e.etiquetado_date::date = (
+                        SELECT MAX(etiquetado_date::date)
+                        FROM processed.etiquetas_llm
+                    ) AND pm.platform IN ('x','twitter')
+                )                                                  AS agregados_x,
+                COUNT(*) FILTER (
+                    WHERE e.etiquetado_date::date = (
+                        SELECT MAX(etiquetado_date::date)
+                        FROM processed.etiquetas_llm
+                    ) AND pm.platform = 'youtube'
+                )                                                  AS agregados_yt
+            FROM processed.etiquetas_llm e
+            JOIN processed.mensajes pm USING (message_uuid)
         """, conn).iloc[0]
     return {
         "total_procesados": int(row["total_procesados"]),
         "ultima_fecha": row["ultima_fecha"],
         "agregados_ultima": int(row["agregados_ultima"]),
+        "total_x": int(row["total_x"]),
+        "total_yt": int(row["total_yt"]),
+        "agregados_x": int(row["agregados_x"]),
+        "agregados_yt": int(row["agregados_yt"]),
     }
 
 
@@ -930,6 +949,7 @@ def render_categorias():
     st.markdown("Clasificación del LLM en las 6 categorías del proyecto ReTo.")
 
     llm_stats = load_llm_stats()
+
     kc1, kc2, kc3 = st.columns(3)
     kc1.metric("Total mensajes procesados", f"{llm_stats['total_procesados']:,}")
     kc2.metric(
@@ -940,6 +960,13 @@ def render_categorias():
         "Última actualización",
         llm_stats["ultima_fecha"].strftime("%d/%m/%Y") if llm_stats["ultima_fecha"] else "—",
     )
+
+    kp1, kp2, kp3, kp4 = st.columns(4)
+    kp1.metric("X — Total", f"{llm_stats['total_x']:,}")
+    kp2.metric("X — Últimos agregados", f"{llm_stats['agregados_x']:,}")
+    kp3.metric("YouTube — Total", f"{llm_stats['total_yt']:,}")
+    kp4.metric("YouTube — Últimos agregados", f"{llm_stats['agregados_yt']:,}")
+
     st.markdown("---")
 
     opts = load_filter_options()
