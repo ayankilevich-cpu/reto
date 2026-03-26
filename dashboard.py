@@ -4202,11 +4202,8 @@ def _load_annotation_kpis(annotator_id: str) -> dict:
             SELECT COUNT(*) FROM processed.mensajes pm
             WHERE pm.platform = 'youtube'
               AND pm.relevante_llm = 'SI'
-              AND pm.message_uuid NOT IN (
-                  SELECT message_uuid FROM processed.validaciones_manuales
-              )
         """)
-        pendientes = cur.fetchone()[0]
+        total_relevantes = cur.fetchone()[0]
 
         cur.execute("""
             SELECT COUNT(*) FROM processed.validaciones_manuales vm
@@ -4214,6 +4211,8 @@ def _load_annotation_kpis(annotator_id: str) -> dict:
             WHERE pm.platform = 'youtube'
         """)
         total_anotados = cur.fetchone()[0]
+
+        pendientes = total_relevantes - total_anotados
 
         cur.execute("""
             SELECT COUNT(*) FROM processed.validaciones_manuales vm
@@ -4233,11 +4232,15 @@ def _load_annotation_kpis(annotator_id: str) -> dict:
 
         cur.close()
 
+    pct_avance = (total_anotados / total_relevantes * 100) if total_relevantes else 0
+
     return {
+        "total_relevantes": total_relevantes,
         "pendientes": pendientes,
         "total_anotados": total_anotados,
         "anotados_hoy": anotados_hoy,
         "por_anotador": por_anotador,
+        "pct_avance": pct_avance,
     }
 
 
@@ -4500,11 +4503,13 @@ def _render_anotacion_youtube(annotator: str):
 
     # --- KPIs de progreso ---
     kpis = _load_annotation_kpis(annotator)
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Pendientes", f"{kpis['pendientes']:,}")
-    k2.metric("Total anotados (YT)", f"{kpis['total_anotados']:,}")
-    k3.metric("Anotados hoy", f"{kpis['anotados_hoy']:,}")
-    k4.metric(f"Por {annotator}", f"{kpis['por_anotador']:,}")
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Total relevantes (YT)", f"{kpis['total_relevantes']:,}")
+    k2.metric("Anotados", f"{kpis['total_anotados']:,}")
+    k3.metric("Pendientes", f"{kpis['pendientes']:,}")
+    k4.metric("Anotados hoy", f"{kpis['anotados_hoy']:,}")
+    k5.metric(f"Por {annotator}", f"{kpis['por_anotador']:,}")
+    st.progress(kpis["pct_avance"] / 100, text=f"Avance: {kpis['pct_avance']:.1f}%")
 
     st.divider()
 
