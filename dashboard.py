@@ -753,10 +753,12 @@ def render_sidebar():
     st.sidebar.markdown(
         f"**{user_name}** · {_ROLE_DISPLAY.get(role, role)}"
     )
-    if st.sidebar.button("Cerrar sesión", key="logout_btn"):
+
+    def _do_logout():
         for k in ("user_role", "user_name"):
             st.session_state.pop(k, None)
-        st.rerun()
+
+    st.sidebar.button("Cerrar sesión", key="logout_btn", on_click=_do_logout)
 
     st.sidebar.markdown("---")
 
