@@ -4893,7 +4893,8 @@ def _load_vllm_yt_queue(clasif_filter: Optional[str] = None) -> pd.DataFrame:
                 params.append(clasif_filter)
 
             df = pd.read_sql(f"""
-                SELECT pm.message_uuid, pm.content_original, pm.source_media,
+                SELECT DISTINCT ON (pm.content_original)
+                       pm.message_uuid, pm.content_original, pm.source_media,
                        pm.created_at, rm.tweet_id AS video_id,
                        e.clasificacion_principal, e.categoria_odio_pred,
                        e.intensidad_pred, e.resumen_motivo
@@ -4905,11 +4906,12 @@ def _load_vllm_yt_queue(clasif_filter: Optional[str] = None) -> pd.DataFrame:
                       SELECT message_uuid FROM processed.validaciones_manuales
                   )
                   {clasif_cond}
-                ORDER BY RANDOM()
-                LIMIT 100
+                ORDER BY pm.content_original, pm.created_at DESC
             """, conn, params=params)
     except Exception:
         return pd.DataFrame()
+
+    df = df.sample(frac=1).head(100).reset_index(drop=True)
 
     skipped = st.session_state.get("vllm_yt_skipped", set())
     if skipped and not df.empty:
