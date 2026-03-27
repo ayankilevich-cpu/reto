@@ -106,15 +106,23 @@ _RESTRICTED_SECTIONS: Dict[str, set] = {
 _ROLE_DISPLAY = {"admin": "Administrador", "editor": "Editor", "viewer": "Visualización"}
 
 
+_FALLBACK_USERS: Dict[str, Dict[str, str]] = {
+    "Admin": {"password": "2026", "role": "admin"},
+    "Reto": {"password": "2026", "role": "editor"},
+    "usuario1": {"password": "2026", "role": "viewer"},
+}
+
+
 def _load_users() -> Dict[str, Dict[str, str]]:
-    """Lee credenciales de st.secrets['users']. Retorna {username: {password, role}}."""
+    """Lee credenciales de st.secrets['users'], con fallback hardcoded."""
     try:
+        users_section = st.secrets["users"]
         return {
             user: {"password": str(data["password"]), "role": str(data["role"])}
-            for user, data in st.secrets["users"].items()
+            for user, data in users_section.items()
         }
     except Exception:
-        return {}
+        return _FALLBACK_USERS
 
 
 def _check_auth() -> bool:
@@ -142,11 +150,6 @@ def _render_login():
     st.markdown("---")
 
     users = _load_users()
-    if not users:
-        st.session_state["user_role"] = "admin"
-        st.session_state["user_name"] = "admin"
-        st.rerun()
-        return
 
     with st.form("login_form"):
         username = st.text_input("Usuario", placeholder="Ingresá tu usuario")
