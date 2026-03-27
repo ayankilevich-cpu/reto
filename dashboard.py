@@ -755,8 +755,8 @@ def render_sidebar():
     )
 
     def _do_logout():
-        for k in ("user_role", "user_name"):
-            st.session_state.pop(k, None)
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
 
     st.sidebar.button("Cerrar sesión", key="logout_btn", on_click=_do_logout)
 
