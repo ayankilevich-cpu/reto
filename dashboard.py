@@ -5373,6 +5373,7 @@ def _render_validacion_llm_youtube(annotator: str):
     if pending is not None:
         ok = _save_vllm_yt_validation(**pending)
         if ok:
+            _load_vllm_yt_corrections.clear()
             st.session_state.get("vllm_yt_skipped", set()).discard(
                 pending["message_uuid"]
             )
