@@ -36,7 +36,7 @@ import sys
 from collections import Counter
 from datetime import date
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 import plotly.express as px
@@ -1715,9 +1715,9 @@ def render_analisis_contextual():
         f"**{avg_pct:.1f}%** y umbral **{spike_threshold:.1f}%** (= 1,5 × ese promedio) sobre **semanas ya cerradas** "
         f"del gráfico (≥**{MIN_MSGS_CHART}** mensajes cada una, **sin** la semana en curso). "
         "Ese umbral **cambia** si el histórico evoluciona (p. ej. un promedio de 3,6% implica umbral 5,4%). "
-        "Las **barras rojas** siguen el criterio **congelado al cierre** de cada semana en la base de datos; "
-        "el detalle por semana está en la **tabla debajo del gráfico** (columnas de umbral y promedio de referencia). "
-        "Filas antiguas pueden mostrar **—** si el análisis se generó antes de guardar esas columnas."
+        "Las **barras rojas** siguen el criterio **congelado al cierre** guardado en la base de datos. "
+        "La **tabla** bajo el gráfico resume **% de odio** y **alerta** por semana; si el pipeline archiva "
+        "umbral y promedio de referencia (análisis posteriores a esa mejora), esas columnas **aparecen solas** en la tabla."
     )
 
     colors = []
@@ -1780,8 +1780,17 @@ def render_analisis_contextual():
         f"Solo semanas con {MIN_MSGS_CHART}+ mensajes"
     )
 
-    st.subheader("Umbral y referencia por semana (congelados al cierre)")
     _tbl = df_chart.sort_values("semana_inicio").copy()
+    _tiene_umbral_archivado = bool(
+        _tbl["umbral_spike_pct"].notna().any()
+        or _tbl["promedio_referencia_pct"].notna().any()
+    )
+
+    st.subheader(
+        "Umbral y referencia por semana (congelados al cierre)"
+        if _tiene_umbral_archivado
+        else "Resumen por semana"
+    )
 
     def _fmt_pct_cell(v) -> str:
         if v is None or (isinstance(v, float) and pd.isna(v)):
@@ -1799,15 +1808,18 @@ def render_analisis_contextual():
         except (TypeError, ValueError):
             return "—"
 
+    _tab_cols: Dict[str, Any] = {
+        "Semana": _tbl["semana_label"],
+        "% odio": _tbl["pct_odio"].map(lambda x: f"{x}%"),
+    }
+    if _tiene_umbral_archivado:
+        _tab_cols["Promedio ref. (al cierre)"] = _tbl["promedio_referencia_pct"].map(_fmt_pct_cell)
+        _tab_cols["Umbral 1,5× (al cierre)"] = _tbl["umbral_spike_pct"].map(_fmt_pct_cell)
+        _tab_cols["Semanas en base"] = _tbl["n_semanas_base"].map(_fmt_n_base)
+    _tab_cols["Alerta"] = _tbl["es_spike"].map(lambda x: "Sí" if x else "No")
+
     st.dataframe(
-        pd.DataFrame({
-            "Semana": _tbl["semana_label"],
-            "% odio": _tbl["pct_odio"].map(lambda x: f"{x}%"),
-            "Promedio ref. (al cierre)": _tbl["promedio_referencia_pct"].map(_fmt_pct_cell),
-            "Umbral 1,5× (al cierre)": _tbl["umbral_spike_pct"].map(_fmt_pct_cell),
-            "Semanas en base": _tbl["n_semanas_base"].map(_fmt_n_base),
-            "Alerta": _tbl["es_spike"].map(lambda x: "Sí" if x else "No"),
-        }),
+        pd.DataFrame(_tab_cols),
         use_container_width=True,
         hide_index=True,
         key="ctx_umbral_por_semana",
