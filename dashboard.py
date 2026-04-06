@@ -1371,6 +1371,14 @@ def _render_ranking_simple(df: pd.DataFrame, top_n: int, key_suffix: str):
     )
 
 
+def _filter_ranking_explore_detail_df(detail_df: pd.DataFrame) -> pd.DataFrame:
+    """Solo admin ve desglose Odio Baseline / LLM / Gold (y score); resto: candidatos + odio agregado."""
+    if st.session_state.get("user_role") == "admin":
+        return detail_df
+    visibles = {"Candidatos (diccionario)", "Odio — Cualquier fuente"}
+    return detail_df[detail_df["Métrica"].isin(visibles)].reset_index(drop=True)
+
+
 def _render_explorar_medio():
     """Pestaña exploratoria: seleccionar un medio y plataforma para ver sus métricas."""
     st.markdown("Seleccioná un medio y una plataforma para ver sus métricas de odio.")
@@ -1473,7 +1481,7 @@ def _render_explorar_medio():
             ],
         }
         st.dataframe(
-            pd.DataFrame(detail_data),
+            _filter_ranking_explore_detail_df(pd.DataFrame(detail_data)),
             use_container_width=True, hide_index=True,
             key="explore_detail_table",
         )
@@ -1539,7 +1547,7 @@ def _render_explorar_medio():
         ],
     }
     st.dataframe(
-        pd.DataFrame(detail_data),
+        _filter_ranking_explore_detail_df(pd.DataFrame(detail_data)),
         use_container_width=True, hide_index=True,
         key="explore_detail_table",
     )
