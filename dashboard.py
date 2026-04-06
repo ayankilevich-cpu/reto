@@ -154,23 +154,29 @@ def _render_login():
 
     users = _load_users()
 
-    with st.form("login_form"):
-        username = st.text_input("Usuario", placeholder="Ingresá tu usuario")
-        password = st.text_input("Contraseña", type="password", placeholder="Ingresá tu contraseña")
-        submitted = st.form_submit_button("Ingresar", type="primary", use_container_width=True)
+    _, col_login, _ = st.columns([1, 1, 1])
+    with col_login:
+        with st.form("login_form"):
+            username = st.text_input("Usuario", placeholder="Ingresá tu usuario")
+            password = st.text_input(
+                "Contraseña", type="password", placeholder="Ingresá tu contraseña"
+            )
+            submitted = st.form_submit_button(
+                "Ingresar", type="primary", use_container_width=True
+            )
 
-    if submitted:
-        if not username or not password:
-            st.error("Completá usuario y contraseña.")
-            return
+        if submitted:
+            if not username or not password:
+                st.error("Completá usuario y contraseña.")
+                return
 
-        user_data = users.get(username)
-        if user_data and user_data["password"] == password:
-            st.session_state["user_role"] = user_data["role"]
-            st.session_state["user_name"] = username
-            st.rerun()
-        else:
-            st.error("Usuario o contraseña incorrectos.")
+            user_data = users.get(username)
+            if user_data and user_data["password"] == password:
+                st.session_state["user_role"] = user_data["role"]
+                st.session_state["user_name"] = username
+                st.rerun()
+            else:
+                st.error("Usuario o contraseña incorrectos.")
 
 
 def _get_sections_for_role(role: str) -> List[str]:
