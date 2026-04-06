@@ -70,7 +70,7 @@ CAT_COLORS = [
 ]
 
 # Visible en sidebar: confirmar que el despliegue (Streamlit Cloud, etc.) sirvió este archivo.
-DASHBOARD_UI_VERSION = "1.3 · muestra LLM arriba del todo"
+DASHBOARD_UI_VERSION = "1.4 · carrusel muestra LLM"
 
 # Mapeo de nombres de plataforma para mostrar
 PLATFORM_DISPLAY = {
@@ -608,17 +608,46 @@ def load_muestra_ultima_corrida_llm(limit: int = 20) -> Tuple[pd.DataFrame, Opti
     return df, ultima
 
 
+def _render_one_muestra_card(row) -> None:
+    """Una sola tarjeta de mensaje (fila Series o dict-like)."""
+    plat = platform_label(str(row.get("platform") or ""))
+    medio = (row.get("source_media") or "").strip() or "—"
+    clasif = (row.get("clasificacion_principal") or "—").strip()
+    raw_cat = (row.get("categoria_odio_pred") or "").strip()
+    cat_label = CATEGORIAS_LABELS.get(raw_cat, raw_cat or "—")
+    intens = (row.get("intensidad_pred") or "").strip() or "—"
+    motivo = (row.get("resumen_motivo") or "").strip()
+    texto = str(row.get("content_original") or "").strip()
+    if len(texto) > 4000:
+        texto = texto[:4000] + "…"
+
+    with st.container(border=True):
+        st.markdown(f"**{plat}** · Medio: `{medio}`")
+        st.markdown(
+            f"**Clasificación:** `{clasif}` · **Categoría:** {cat_label} · "
+            f"**Intensidad:** `{intens}`"
+        )
+        if motivo:
+            st.markdown(f"*Resumen (LLM):* {motivo}")
+        st.markdown("**Mensaje (anonimizado)**")
+        st.text(texto)
+
+
 def _render_muestra_ultima_corrida_llm_section(*, key_suffix: str = "") -> None:
-    """Bloque de UI: mensajes ejemplo de la última fecha de etiquetado LLM (texto anonimizado)."""
-    ks = key_suffix
+    """Bloque de UI: carrusel de una tarjeta + flechas (evita scroll vertical largo)."""
+    ks = key_suffix or "main"
+    idx_key = f"cat_llm_carousel_idx_{ks}"
+
     st.markdown("### Muestra de mensajes etiquetados por el LLM")
     st.caption(
         "Hasta **20** mensajes al azar del **último día calendario** con etiquetas en "
-        "`processed.etiquetas_llm` (la misma fecha que verás en la métrica *Última actualización*). "
-        "Texto desde **processed.mensajes** (anonimizado)."
+        "`processed.etiquetas_llm` (misma fecha que la métrica *Última actualización*). "
+        "Navegación horizontal con **◀ ▶**; texto desde **processed.mensajes** (anonimizado)."
     )
+
     c_btn, _ = st.columns([1, 4])
-    if c_btn.button("Nueva muestra aleatoria", key=f"cat_llm_muestra_reroll{ks}"):
+    if c_btn.button("Nueva muestra aleatoria", key=f"cat_llm_muestra_reroll_{ks}"):
+        st.session_state[idx_key] = 0
         st.rerun()
 
     df_muestra, fecha_muestra = load_muestra_ultima_corrida_llm(limit=20)
@@ -633,35 +662,41 @@ def _render_muestra_ultima_corrida_llm_section(*, key_suffix: str = "") -> None:
             "`processed.mensajes` ese día (UUID desalineados o mensajes no cargados)."
         )
     else:
+        n = len(df_muestra)
+        if idx_key not in st.session_state:
+            st.session_state[idx_key] = 0
+        st.session_state[idx_key] = max(0, min(int(st.session_state[idx_key]), n - 1))
+        i = int(st.session_state[idx_key])
+
         if hasattr(fecha_muestra, "strftime"):
             fecha_txt = fecha_muestra.strftime("%d/%m/%Y")
         else:
             fecha_txt = str(fecha_muestra)
         st.caption(
-            f"Muestra del **{fecha_txt}** — {len(df_muestra)} mensaje(s) mostrado(s)."
+            f"Muestra del **{fecha_txt}** — **{n}** mensajes en el lote · "
+            f"mostrando **{i + 1}** de **{n}**."
         )
-        for _, row in df_muestra.iterrows():
-            plat = platform_label(str(row.get("platform") or ""))
-            medio = (row.get("source_media") or "").strip() or "—"
-            clasif = (row.get("clasificacion_principal") or "—").strip()
-            raw_cat = (row.get("categoria_odio_pred") or "").strip()
-            cat_label = CATEGORIAS_LABELS.get(raw_cat, raw_cat or "—")
-            intens = (row.get("intensidad_pred") or "").strip() or "—"
-            motivo = (row.get("resumen_motivo") or "").strip()
-            texto = str(row.get("content_original") or "").strip()
-            if len(texto) > 4000:
-                texto = texto[:4000] + "…"
 
-            with st.container(border=True):
-                st.markdown(f"**{plat}** · Medio: `{medio}`")
-                st.markdown(
-                    f"**Clasificación:** `{clasif}` · **Categoría:** {cat_label} · "
-                    f"**Intensidad:** `{intens}`"
-                )
-                if motivo:
-                    st.markdown(f"*Resumen (LLM):* {motivo}")
-                st.markdown("**Mensaje (anonimizado)**")
-                st.text(texto)
+        col_prev, col_ctr, col_next = st.columns([1, 6, 1])
+        with col_prev:
+            prev_dis = n <= 1 or i <= 0
+            if st.button("◀", key=f"cat_llm_prev_{ks}", help="Anterior", disabled=prev_dis):
+                st.session_state[idx_key] = i - 1
+                st.rerun()
+        with col_ctr:
+            st.markdown(
+                f"<div style='text-align:center;padding:0.35rem 0;color:#5c6b7a;font-size:0.9rem;'>"
+                f"Mensaje <b>{i + 1}</b> / {n}</div>",
+                unsafe_allow_html=True,
+            )
+        with col_next:
+            next_dis = n <= 1 or i >= n - 1
+            if st.button("▶", key=f"cat_llm_next_{ks}", help="Siguiente", disabled=next_dis):
+                st.session_state[idx_key] = i + 1
+                st.rerun()
+
+        row = df_muestra.iloc[i]
+        _render_one_muestra_card(row)
 
 
 @st.cache_data(ttl=300)
