@@ -3650,6 +3650,55 @@ def _render_art510_validacion_humana(summary: dict):
     if df_vh.empty:
         return
 
+    _dec_lab = {
+        "confirmado": "Confirmado",
+        "rechazado": "Rechazado",
+        "corregido": "Corregido",
+    }
+    st.markdown("#### Resumen visual")
+    g1, g2 = st.columns(2)
+    with g1:
+        vc = df_vh["validacion_humana"].value_counts().reset_index()
+        vc.columns = ["decision", "Cantidad"]
+        vc["Decisión"] = vc["decision"].map(lambda x: _dec_lab.get(str(x), str(x)))
+        fig_d = px.pie(
+            vc, names="Decisión", values="Cantidad",
+            title="Distribución de decisiones humanas",
+            hole=0.35,
+            color="Decisión",
+            color_discrete_map={
+                "Confirmado": COLORS["danger"],
+                "Rechazado": COLORS["muted"],
+                "Corregido": COLORS["warning"],
+            },
+        )
+        fig_d.update_layout(height=360)
+        st.plotly_chart(fig_d, use_container_width=True, key="art510_vh_pie_decisiones")
+    with g2:
+        df_ap = df_vh[df_vh["validacion_humana"].isin(["confirmado", "corregido"])].copy()
+        df_ap = df_ap[df_ap["apartado_510_final"].notna() & (df_ap["apartado_510_final"].astype(str) != "")]
+        if df_ap.empty:
+            st.info("Sin apartado humano registrado para confirmados/corregidos.")
+        else:
+            df_ap["Apartado"] = df_ap["apartado_510_final"].map(
+                lambda x: APARTADO_LABELS.get(x, x) if pd.notna(x) else "—"
+            )
+            ap_c = df_ap["Apartado"].value_counts().reset_index()
+            ap_c.columns = ["Apartado", "Cantidad"]
+            fig_ap = px.bar(
+                ap_c, x="Apartado", y="Cantidad",
+                title="Apartado Art. 510.1 (decisión humana)",
+                color="Apartado",
+                color_discrete_map={
+                    APARTADO_LABELS["1a"]: ART510_COLORS["1a"],
+                    APARTADO_LABELS["1b"]: ART510_COLORS["1b"],
+                    APARTADO_LABELS["1c"]: ART510_COLORS["1c"],
+                },
+            )
+            fig_ap.update_layout(height=360, showlegend=False)
+            st.plotly_chart(fig_ap, use_container_width=True, key="art510_vh_bar_apartado")
+
+    st.markdown("---")
     tab_conf, tab_rech, tab_all = st.tabs([
         f"Confirmados ({confirmados})",
         f"Rechazados ({rechazados})",
@@ -5101,6 +5150,8 @@ def _render_validacion_art510(annotator: str):
                 )
         else:
             st.success("No hay mensajes Art. 510 pendientes de validación.")
+            if summary.get("total_validados", 0) > 0:
+                _render_art510_validacion_humana(summary)
         if st.button("Limpiar saltos Art. 510 y recargar", key="v510_clear"):
             st.session_state["v510_skipped"] = set()
             st.rerun()
