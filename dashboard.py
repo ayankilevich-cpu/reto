@@ -5258,8 +5258,8 @@ def _load_vllm_x_queue(clasif_filter: Optional[str] = None) -> pd.DataFrame:
 
             df = pd.read_sql(f"""
                 SELECT DISTINCT ON (pm.content_original)
-                       pm.message_uuid, pm.content_original, pm.source_media,
-                       pm.created_at, pm.url,
+                       pm.message_uuid, pm.content_original,
+                       pm.created_at,
                        e.clasificacion_principal, e.categoria_odio_pred,
                        e.intensidad_pred, e.resumen_motivo
                 FROM processed.etiquetas_llm e
@@ -6071,13 +6071,6 @@ def _render_validacion_llm_x(annotator: str):
             "contenido_vllm_x", value=str(msg["content_original"]),
             height=140, disabled=True, label_visibility="collapsed",
         )
-        medio = msg.get("source_media") or "—"
-        post_url = msg.get("url")
-        url_link = ""
-        if post_url and pd.notna(post_url) and str(post_url).strip():
-            u = str(post_url).strip()
-            url_link = f" · [Abrir en X]({u})"
-        st.caption(f"Medio: **{medio}**{url_link}")
 
     with col_llm:
         st.markdown("**Predicción del LLM:**")
