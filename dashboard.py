@@ -23,7 +23,7 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 import plotly.express as px
@@ -5246,6 +5246,118 @@ def _load_vllm_yt_kpis(annotator_id: str, clasif_filter: Optional[str] = None) -
         }
 
 
+def _load_vllm_x_queue(clasif_filter: Optional[str] = None) -> pd.DataFrame:
+    """Cola de mensajes X/Twitter con etiqueta LLM pendientes de validación humana."""
+    try:
+        with get_conn() as conn:
+            clasif_cond = ""
+            params: list = []
+            if clasif_filter:
+                clasif_cond = "AND e.clasificacion_principal = %s"
+                params.append(clasif_filter)
+
+            df = pd.read_sql(f"""
+                SELECT DISTINCT ON (pm.content_original)
+                       pm.message_uuid, pm.content_original, pm.source_media,
+                       pm.created_at, pm.url,
+                       e.clasificacion_principal, e.categoria_odio_pred,
+                       e.intensidad_pred, e.resumen_motivo
+                FROM processed.etiquetas_llm e
+                JOIN processed.mensajes pm USING (message_uuid)
+                WHERE pm.platform IN ('x', 'twitter')
+                  AND pm.message_uuid NOT IN (
+                      SELECT message_uuid FROM processed.validaciones_manuales
+                  )
+                  {clasif_cond}
+                ORDER BY pm.content_original, pm.created_at DESC
+            """, conn, params=params)
+    except Exception:
+        return pd.DataFrame()
+
+    df = df.sample(frac=1).head(100).reset_index(drop=True)
+
+    skipped = st.session_state.get("vllm_x_skipped", set())
+    if skipped and not df.empty:
+        df = df[~df["message_uuid"].astype(str).isin(skipped)]
+
+    return df
+
+
+def _load_vllm_x_kpis(annotator_id: str, clasif_filter: Optional[str] = None) -> dict:
+    """KPIs de validación de etiquetado LLM en X."""
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+
+            clasif_cond = ""
+            params_pending: list = []
+            if clasif_filter:
+                clasif_cond = "AND e.clasificacion_principal = %s"
+                params_pending.append(clasif_filter)
+
+            cur.execute(f"""
+                SELECT COUNT(*) FROM processed.etiquetas_llm e
+                JOIN processed.mensajes pm USING (message_uuid)
+                WHERE pm.platform IN ('x', 'twitter')
+                  AND pm.message_uuid NOT IN (
+                      SELECT message_uuid FROM processed.validaciones_manuales
+                  )
+                  {clasif_cond}
+            """, params_pending)
+            pendientes = cur.fetchone()[0]
+
+            cur.execute("""
+                SELECT COUNT(*) FROM processed.etiquetas_llm e
+                JOIN processed.mensajes pm USING (message_uuid)
+                WHERE pm.platform IN ('x', 'twitter')
+            """)
+            total_etiquetados_llm = cur.fetchone()[0]
+
+            cur.execute("""
+                SELECT COUNT(*) FROM processed.validaciones_manuales vm
+                JOIN processed.mensajes pm USING (message_uuid)
+                JOIN processed.etiquetas_llm e USING (message_uuid)
+                WHERE pm.platform IN ('x', 'twitter')
+            """)
+            total_validados = cur.fetchone()[0]
+
+            cur.execute("""
+                SELECT COUNT(*) FROM processed.validaciones_manuales vm
+                JOIN processed.mensajes pm USING (message_uuid)
+                JOIN processed.etiquetas_llm e USING (message_uuid)
+                WHERE pm.platform IN ('x', 'twitter')
+                  AND vm.annotation_date = CURRENT_DATE
+            """)
+            validados_hoy = cur.fetchone()[0]
+
+            cur.execute("""
+                SELECT COUNT(*) FROM processed.validaciones_manuales vm
+                JOIN processed.mensajes pm USING (message_uuid)
+                JOIN processed.etiquetas_llm e USING (message_uuid)
+                WHERE pm.platform IN ('x', 'twitter')
+                  AND vm.annotator_id = %s
+            """, (annotator_id,))
+            por_anotador = cur.fetchone()[0]
+
+            cur.close()
+
+        pct = (total_validados / total_etiquetados_llm * 100) if total_etiquetados_llm else 0
+        return {
+            "total_etiquetados_llm": total_etiquetados_llm,
+            "pendientes": pendientes,
+            "total_validados": total_validados,
+            "validados_hoy": validados_hoy,
+            "por_anotador": por_anotador,
+            "pct_avance": pct,
+        }
+    except Exception:
+        return {
+            "total_etiquetados_llm": 0, "pendientes": 0,
+            "total_validados": 0, "validados_hoy": 0,
+            "por_anotador": 0, "pct_avance": 0,
+        }
+
+
 def _save_vllm_yt_validation(
     message_uuid: str,
     odio_flag: Optional[bool],
@@ -5352,9 +5464,14 @@ def _load_vllm_yt_corrections() -> pd.DataFrame:
     return df
 
 
-def _render_vllm_yt_error_analysis():
-    """Panel de análisis de concordancia LLM vs Humano para YouTube."""
-    df = _load_vllm_yt_corrections()
+def _render_vllm_label_error_analysis(
+    corrections_fn: Callable[[], pd.DataFrame],
+    *,
+    key_prefix: str,
+    file_tag: str,
+) -> None:
+    """Panel de concordancia LLM vs Humano (YouTube o X); `corrections_fn` devuelve el DataFrame."""
+    df = corrections_fn()
 
     if df.empty or len(df) < 3:
         st.info(
@@ -5551,13 +5668,13 @@ def _render_vllm_yt_error_analysis():
             lambda x: CATEGORIAS_LABELS.get(x, x) if pd.notna(x) else "—"
         )
         st.dataframe(display_df, use_container_width=True, hide_index=True,
-                      key="vllm_yt_errors_table")
+                      key=f"{key_prefix}_errors_table")
 
     # ── Exportar correcciones como few-shot para el prompt ──
     st.markdown("---")
     st.markdown("##### Exportar para mejora del prompt")
 
-    if df_err.empty if "df_err" not in dir() else df_err.empty:
+    if df_err.empty:
         st.info("No hay correcciones para exportar.")
     else:
         few_shot_lines = []
@@ -5586,9 +5703,9 @@ def _render_vllm_yt_error_analysis():
         st.download_button(
             "Descargar correcciones (JSON)",
             data=few_shot_json,
-            file_name="correcciones_llm_yt_few_shot.json",
+            file_name=f"correcciones_llm_{file_tag}_few_shot.json",
             mime="application/json",
-            key="vllm_yt_download_json",
+            key=f"{key_prefix}_download_json",
         )
 
         prompt_block = "EJEMPLOS DE CORRECCIÓN (few-shot):\n"
@@ -5609,13 +5726,58 @@ def _render_vllm_yt_error_analysis():
         st.download_button(
             "Descargar bloque para prompt (TXT)",
             data=prompt_block,
-            file_name="few_shot_block_prompt.txt",
+            file_name=f"few_shot_block_prompt_{file_tag}.txt",
             mime="text/plain",
-            key="vllm_yt_download_prompt",
+            key=f"{key_prefix}_download_prompt",
         )
 
         with st.expander("Vista previa del bloque few-shot"):
             st.code(prompt_block[:3000], language="text")
+
+
+def _render_vllm_yt_error_analysis() -> None:
+    _render_vllm_label_error_analysis(
+        _load_vllm_yt_corrections, key_prefix="vllm_yt", file_tag="yt",
+    )
+
+
+@st.cache_data(ttl=120)
+def _load_vllm_x_corrections() -> pd.DataFrame:
+    """Validaciones humanas de etiquetado LLM en X (twitter / x)."""
+    try:
+        with get_conn() as conn:
+            df = pd.read_sql("""
+                SELECT pm.message_uuid,
+                       pm.content_original,
+                       pm.source_media,
+                       e.clasificacion_principal AS llm_clasif,
+                       e.categoria_odio_pred     AS llm_categoria,
+                       e.intensidad_pred         AS llm_intensidad,
+                       e.resumen_motivo          AS llm_motivo,
+                       CASE WHEN v.odio_flag = TRUE THEN 'ODIO'
+                            WHEN v.odio_flag = FALSE THEN 'NO_ODIO'
+                            ELSE 'DUDOSO' END    AS humano_clasif,
+                       v.categoria_odio          AS humano_categoria,
+                       v.intensidad              AS humano_intensidad,
+                       v.humor_flag              AS humano_humor,
+                       v.coincide_con_llm,
+                       v.annotator_id,
+                       v.annotation_date
+                FROM processed.validaciones_manuales v
+                JOIN processed.mensajes pm USING (message_uuid)
+                JOIN processed.etiquetas_llm e USING (message_uuid)
+                WHERE pm.platform IN ('x', 'twitter')
+                ORDER BY v.annotation_date DESC
+            """, conn)
+    except Exception:
+        return pd.DataFrame()
+    return df
+
+
+def _render_vllm_x_error_analysis() -> None:
+    _render_vllm_label_error_analysis(
+        _load_vllm_x_corrections, key_prefix="vllm_x", file_tag="x",
+    )
 
 
 def _render_validacion_llm_youtube(annotator: str):
@@ -5829,13 +5991,216 @@ def _render_validacion_llm_youtube(annotator: str):
         st.rerun()
 
 
+def _render_validacion_llm_x(annotator: str):
+    """Pestaña de validación del etiquetado LLM en X (Twitter)."""
+
+    pending = st.session_state.pop("_vllm_x_pending_save", None)
+    if pending is not None:
+        ok = _save_vllm_yt_validation(**pending)
+        if ok:
+            _load_vllm_x_corrections.clear()
+            st.session_state.get("vllm_x_skipped", set()).discard(
+                pending["message_uuid"]
+            )
+            st.session_state["_vllm_x_last_status"] = (
+                "ok", pending["message_uuid"][:8]
+            )
+        else:
+            st.session_state["_vllm_x_last_status"] = ("error", "")
+
+    last_status = st.session_state.pop("_vllm_x_last_status", None)
+    if last_status:
+        if last_status[0] == "ok":
+            st.success(f"Validación LLM guardada ({last_status[1]}...)")
+        else:
+            st.error("Error al guardar la validación.")
+
+    clasif_options = ["Todos", "ODIO", "NO_ODIO", "DUDOSO"]
+    clasif_sel = st.selectbox(
+        "Filtrar por predicción LLM",
+        options=clasif_options,
+        index=0,
+        key="vllm_x_clasif_filter",
+    )
+    clasif_filter = clasif_sel if clasif_sel != "Todos" else None
+
+    kpis = _load_vllm_x_kpis(annotator, clasif_filter)
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Etiquetados LLM (X)", f"{kpis['total_etiquetados_llm']:,}")
+    k2.metric("Validados", f"{kpis['total_validados']:,}")
+    k3.metric("Pendientes" + (f" ({clasif_sel})" if clasif_filter else ""),
+              f"{kpis['pendientes']:,}")
+    k4.metric("Validados hoy", f"{kpis['validados_hoy']:,}")
+    k5.metric(f"Por {annotator}", f"{kpis['por_anotador']:,}")
+    st.progress(kpis["pct_avance"] / 100, text=f"Avance validación: {kpis['pct_avance']:.1f}%")
+
+    with st.expander("📊 Análisis de concordancia LLM vs Humano (X / Twitter)", expanded=False):
+        _render_vllm_x_error_analysis()
+
+    st.divider()
+
+    if "vllm_x_skipped" not in st.session_state:
+        st.session_state["vllm_x_skipped"] = set()
+
+    queue = _load_vllm_x_queue(clasif_filter)
+
+    if queue.empty:
+        if kpis["pendientes"] == 0 and kpis["total_etiquetados_llm"] > 0:
+            st.success("Todos los mensajes con etiqueta LLM han sido validados.")
+        elif kpis["total_etiquetados_llm"] == 0:
+            st.info(
+                "No hay mensajes X/Twitter etiquetados por el LLM. "
+                "Ejecutá el pipeline de etiquetado LLM para X primero."
+            )
+        else:
+            st.info("No hay mensajes pendientes con el filtro seleccionado.")
+        if st.button("Limpiar saltos y recargar", key="vllm_x_clear"):
+            st.session_state["vllm_x_skipped"] = set()
+            st.rerun()
+        return
+
+    msg = queue.iloc[0]
+    msg_uuid = str(msg["message_uuid"])
+
+    st.subheader(f"Mensaje a validar  ({queue.shape[0]} en cola)")
+
+    col_msg, col_llm = st.columns([3, 2])
+    with col_msg:
+        st.markdown("**Texto del mensaje:**")
+        st.text_area(
+            "contenido_vllm_x", value=str(msg["content_original"]),
+            height=140, disabled=True, label_visibility="collapsed",
+        )
+        medio = msg.get("source_media") or "—"
+        post_url = msg.get("url")
+        url_link = ""
+        if post_url and pd.notna(post_url) and str(post_url).strip():
+            u = str(post_url).strip()
+            url_link = f" · [Abrir en X]({u})"
+        st.caption(f"Medio: **{medio}**{url_link}")
+
+    with col_llm:
+        st.markdown("**Predicción del LLM:**")
+        llm_clasif = msg.get("clasificacion_principal") or "—"
+        llm_cat_raw = msg.get("categoria_odio_pred") or ""
+        llm_cat = CATEGORIAS_LABELS.get(llm_cat_raw, llm_cat_raw) if llm_cat_raw else "—"
+        llm_int = msg.get("intensidad_pred") or "—"
+        llm_motivo = msg.get("resumen_motivo") or ""
+
+        clasif_colors = {"ODIO": "🔴", "NO_ODIO": "🟢", "DUDOSO": "🟡"}
+        st.markdown(f"**Clasificación:** {clasif_colors.get(llm_clasif, '')} {llm_clasif}")
+        st.markdown(f"**Categoría:** {llm_cat}")
+        int_labels = {"1": "1 — Leve", "2": "2 — Ofensivo", "3": "3 — Hostil"}
+        st.markdown(f"**Intensidad:** {int_labels.get(str(llm_int), str(llm_int))}")
+        if llm_motivo:
+            st.markdown(f"**Motivo:** _{llm_motivo}_")
+
+    st.divider()
+
+    form_seq = st.session_state.get("_vllm_x_form_seq", 0)
+    fk = f"vllm_x_form_{form_seq}"
+
+    llm_odio_idx = (
+        {"ODIO": 0, "NO_ODIO": 1, "DUDOSO": 2}.get(llm_clasif)
+    )
+    llm_cat_idx = None
+    cat_keys = list(CATEGORIAS_LABELS.keys())
+    if llm_cat_raw in cat_keys:
+        llm_cat_idx = cat_keys.index(llm_cat_raw)
+    llm_int_val = int(llm_int) if str(llm_int) in {"1", "2", "3"} else 2
+
+    with st.form(key=fk, clear_on_submit=False):
+        st.markdown("**Clasificación** (precargada con la predicción del LLM)")
+        odio_choice = st.radio(
+            "¿Es discurso de odio?",
+            ["Odio", "No Odio", "Dudoso"],
+            horizontal=True,
+            index=llm_odio_idx,
+            key=f"{fk}_odio",
+        )
+
+        st.markdown("---")
+        st.caption(
+            "Completar solo si la clasificación es **Odio** "
+            "(se ignorarán si se selecciona No Odio / Dudoso)."
+        )
+
+        categoria = st.selectbox(
+            "Categoría de odio",
+            options=cat_keys,
+            format_func=lambda x: CATEGORIAS_LABELS.get(x, x),
+            index=llm_cat_idx,
+            key=f"{fk}_cat",
+        )
+
+        intensidad = st.select_slider(
+            "Intensidad (1 = baja, 3 = alta)",
+            options=[1, 2, 3],
+            value=llm_int_val,
+            key=f"{fk}_int",
+        )
+
+        humor = st.checkbox(
+            "¿Contiene humor / sarcasmo?", key=f"{fk}_humor",
+        )
+
+        st.markdown("---")
+        col_save, col_skip = st.columns(2)
+        submitted = col_save.form_submit_button(
+            "Guardar y siguiente", type="primary", use_container_width=True,
+        )
+        skipped = col_skip.form_submit_button(
+            "Saltar", use_container_width=True,
+        )
+
+    if submitted:
+        if odio_choice is None:
+            st.error("Selecciona una clasificación (Odio / No Odio / Dudoso).")
+            return
+
+        es_odio = odio_choice == "Odio"
+
+        if es_odio and not categoria:
+            st.error("Si marcas **Odio**, selecciona una categoría.")
+            return
+
+        odio_flag = (
+            True if odio_choice == "Odio"
+            else (False if odio_choice == "No Odio" else None)
+        )
+
+        odio_map = {"Odio": "ODIO", "No Odio": "NO_ODIO", "Dudoso": "DUDOSO"}
+        coincide = (
+            odio_map.get(odio_choice) == llm_clasif
+            and (not es_odio or categoria == llm_cat_raw)
+            and (not es_odio or str(intensidad) == str(llm_int))
+        )
+
+        st.session_state["_vllm_x_pending_save"] = {
+            "message_uuid": msg_uuid,
+            "odio_flag": odio_flag,
+            "categoria_odio": categoria if es_odio else None,
+            "intensidad": intensidad if es_odio else None,
+            "humor_flag": humor if es_odio else False,
+            "annotator_id": annotator,
+            "coincide_con_llm": coincide,
+        }
+        st.session_state["_vllm_x_form_seq"] = form_seq + 1
+        st.rerun()
+
+    if skipped:
+        st.session_state.setdefault("vllm_x_skipped", set()).add(msg_uuid)
+        st.session_state["_vllm_x_form_seq"] = form_seq + 1
+        st.rerun()
+
+
 def render_anotacion():
-    """Sección de anotación humana: YouTube + validación Art. 510 + validación LLM YT."""
+    """Sección de anotación humana: YouTube, Art. 510 y validación LLM (YT + X)."""
     st.title("Anotación y validación")
     st.markdown(
         "Validación humana de mensajes: anotación de odio en YouTube, "
         "validación de potenciales delitos Art. 510 (X + YouTube) "
-        "y validación de calidad del etiquetado LLM en YouTube."
+        "y validación de calidad del etiquetado LLM en YouTube y en X."
     )
 
     # --- Identificación del anotador (compartido entre tabs) ---
@@ -5853,10 +6218,11 @@ def render_anotacion():
         return
 
     # --- Tabs ---
-    tab_yt, tab_510, tab_vllm = st.tabs([
+    tab_yt, tab_510, tab_vllm_yt, tab_vllm_x = st.tabs([
         "Anotación odio YouTube",
         "Validación Art. 510 (X + YouTube)",
         "Validación etiquetado LLM (YT)",
+        "Validación Etiquetado LLM X",
     ])
 
     with tab_yt:
@@ -5865,8 +6231,11 @@ def render_anotacion():
     with tab_510:
         _render_validacion_art510(annotator.strip())
 
-    with tab_vllm:
+    with tab_vllm_yt:
         _render_validacion_llm_youtube(annotator.strip())
+
+    with tab_vllm_x:
+        _render_validacion_llm_x(annotator.strip())
 
 
 # ============================================================
