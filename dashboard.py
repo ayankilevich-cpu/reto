@@ -1694,15 +1694,25 @@ def render_analisis_contextual():
     # --- Timeline ---
     st.subheader("Evolución semanal del % de odio")
 
-    avg_pct = float(df_chart["pct_odio"].mean()) if not df_chart.empty else 0
+    # Promedio y umbral solo sobre semanas cerradas (la semana en curso es parcial y no debería mover la línea base).
+    mask_cerrada = ~df_chart.apply(
+        lambda r: _semana_incluye_hoy(r["semana_inicio"], r["semana_fin"], hoy),
+        axis=1,
+    )
+    df_cerradas = df_chart[mask_cerrada]
+    if not df_cerradas.empty:
+        avg_pct = float(df_cerradas["pct_odio"].mean())
+    else:
+        avg_pct = float(df_chart["pct_odio"].mean()) if not df_chart.empty else 0
     spike_threshold = avg_pct * 1.5
 
     st.markdown(
         f"El **umbral de alerta** (línea roja punteada, **{spike_threshold:.1f}%**) no es un valor fijo: "
-        f"se calcula como **1,5 × el promedio** del % de odio (**{avg_pct:.1f}%**) entre las semanas del gráfico "
-        f"(cada una con al menos **{MIN_MSGS_CHART}** mensajes). "
-        "Sirve para marcar semanas con un pico **respecto del nivel habitual** del propio histórico; "
-        "si el promedio cambia, el umbral se mueve (por ejemplo, un promedio de 3,6% implica umbral 5,4%)."
+        f"se calcula como **1,5 × el promedio** del % de odio (**{avg_pct:.1f}%**) entre **semanas ya cerradas** "
+        f"del gráfico (cada una con al menos **{MIN_MSGS_CHART}** mensajes). "
+        "**No** se incluye la semana en curso en ese promedio, porque su volumen y % son parciales. "
+        "Sirve para marcar picos **respecto del nivel habitual**; si el histórico cerrado cambia, el umbral se mueve "
+        "(por ejemplo, un promedio de 3,6% implica umbral 5,4%)."
     )
 
     colors = []
