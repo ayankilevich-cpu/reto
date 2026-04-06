@@ -34,6 +34,7 @@ import base64
 import json
 import sys
 from collections import Counter
+from datetime import date
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
@@ -76,6 +77,7 @@ COLORS = {
     "warning": "#F39C12",
     "success": "#27AE60",
     "muted": "#95A5A6",
+    "current_week": "#EAB308",
 }
 
 CAT_COLORS = [
@@ -1675,20 +1677,42 @@ def render_analisis_contextual():
         lambda d: d.strftime("%d/%m/%y") if hasattr(d, "strftime") else str(d)
     )
 
+    def _semana_incluye_hoy(si, sf, hoy: date) -> bool:
+        if si is None or sf is None or pd.isna(si) or pd.isna(sf):
+            return False
+        if hasattr(si, "date"):
+            si = si.date()
+        if hasattr(sf, "date"):
+            sf = sf.date()
+        try:
+            return si <= hoy <= sf
+        except TypeError:
+            return False
+
+    hoy = date.today()
+
     # --- Timeline ---
     st.subheader("Evolución semanal del % de odio")
 
     avg_pct = float(df_chart["pct_odio"].mean()) if not df_chart.empty else 0
     spike_threshold = avg_pct * 1.5
 
-    colors = [
-        COLORS["danger"] if row["es_spike"] else COLORS["accent"]
-        for _, row in df_chart.iterrows()
-    ]
-    text_labels = [
-        f"{row['pct_odio']}%" if row["es_spike"] or row["pct_odio"] >= avg_pct else ""
-        for _, row in df_chart.iterrows()
-    ]
+    colors = []
+    text_labels = []
+    for _, row in df_chart.iterrows():
+        es_actual = _semana_incluye_hoy(
+            row["semana_inicio"], row["semana_fin"], hoy,
+        )
+        if es_actual:
+            colors.append(COLORS["current_week"])
+        elif row["es_spike"]:
+            colors.append(COLORS["danger"])
+        else:
+            colors.append(COLORS["accent"])
+        show_pct = (
+            es_actual or row["es_spike"] or row["pct_odio"] >= avg_pct
+        )
+        text_labels.append(f"{row['pct_odio']}%" if show_pct else "")
 
     fig_timeline = go.Figure()
     fig_timeline.add_trace(go.Bar(
@@ -1727,8 +1751,9 @@ def render_analisis_contextual():
     st.plotly_chart(fig_timeline, use_container_width=True, key="ctx_timeline")
 
     st.caption(
-        f"Barras rojas = semanas con alerta (>{spike_threshold:.1f}%) · "
-        f"Barras azules = semanas normales · "
+        f"Barra amarilla = semana en curso (métricas parciales hasta el cierre de la semana) · "
+        f"Barras rojas = semanas cerradas con alerta (>{spike_threshold:.1f}%) · "
+        f"Barras azules = semanas cerradas sin alerta · "
         f"Solo semanas con {MIN_MSGS_CHART}+ mensajes"
     )
 
