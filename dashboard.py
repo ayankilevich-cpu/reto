@@ -1670,6 +1670,10 @@ def render_analisis_contextual():
         st.warning("No hay datos de análisis semanal. Ejecutá `analisis_contexto_semanal.py` para generar el histórico.")
         return
 
+    for _col in ("promedio_referencia_pct", "umbral_spike_pct", "n_semanas_base"):
+        if _col not in df.columns:
+            df[_col] = pd.NA
+
     MIN_MSGS_CHART = 100
     df_chart = df[df["total_mensajes"] >= MIN_MSGS_CHART].copy()
 
@@ -1707,12 +1711,13 @@ def render_analisis_contextual():
     spike_threshold = avg_pct * 1.5
 
     st.markdown(
-        f"El **umbral de alerta** (línea roja punteada, **{spike_threshold:.1f}%**) no es un valor fijo: "
-        f"se calcula como **1,5 × el promedio** del % de odio (**{avg_pct:.1f}%**) entre **semanas ya cerradas** "
-        f"del gráfico (cada una con al menos **{MIN_MSGS_CHART}** mensajes). "
-        "**No** se incluye la semana en curso en ese promedio, porque su volumen y % son parciales. "
-        "Sirve para marcar picos **respecto del nivel habitual**; si el histórico cerrado cambia, el umbral se mueve "
-        "(por ejemplo, un promedio de 3,6% implica umbral 5,4%)."
+        f"Las **líneas horizontales** muestran el **contexto vigente** al cargar la página: promedio "
+        f"**{avg_pct:.1f}%** y umbral **{spike_threshold:.1f}%** (= 1,5 × ese promedio) sobre **semanas ya cerradas** "
+        f"del gráfico (≥**{MIN_MSGS_CHART}** mensajes cada una, **sin** la semana en curso). "
+        "Ese umbral **cambia** si el histórico evoluciona (p. ej. un promedio de 3,6% implica umbral 5,4%). "
+        "Las **barras rojas** siguen el criterio **congelado al cierre** de cada semana en la base de datos; "
+        "el detalle por semana está en la **tabla debajo del gráfico** (columnas de umbral y promedio de referencia). "
+        "Filas antiguas pueden mostrar **—** si el análisis se generó antes de guardar esas columnas."
     )
 
     colors = []
@@ -1769,10 +1774,43 @@ def render_analisis_contextual():
     st.plotly_chart(fig_timeline, use_container_width=True, key="ctx_timeline")
 
     st.caption(
-        f"Barra amarilla = semana en curso (métricas parciales hasta el cierre de la semana) · "
-        f"Barras rojas = semanas cerradas con alerta (>{spike_threshold:.1f}%) · "
-        f"Barras azules = semanas cerradas sin alerta · "
+        f"Amarillo = semana en curso (parcial) · "
+        f"Rojo / azul = alerta sí/no **según el cierre** guardado en BD · "
+        f"Líneas = promedio y umbral **vigentes** hoy ({avg_pct:.1f}% / {spike_threshold:.1f}%) · "
         f"Solo semanas con {MIN_MSGS_CHART}+ mensajes"
+    )
+
+    st.subheader("Umbral y referencia por semana (congelados al cierre)")
+    _tbl = df_chart.sort_values("semana_inicio").copy()
+
+    def _fmt_pct_cell(v) -> str:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        try:
+            return f"{float(v):.1f}%"
+        except (TypeError, ValueError):
+            return "—"
+
+    def _fmt_n_base(v) -> str:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        try:
+            return str(int(v))
+        except (TypeError, ValueError):
+            return "—"
+
+    st.dataframe(
+        pd.DataFrame({
+            "Semana": _tbl["semana_label"],
+            "% odio": _tbl["pct_odio"].map(lambda x: f"{x}%"),
+            "Promedio ref. (al cierre)": _tbl["promedio_referencia_pct"].map(_fmt_pct_cell),
+            "Umbral 1,5× (al cierre)": _tbl["umbral_spike_pct"].map(_fmt_pct_cell),
+            "Semanas en base": _tbl["n_semanas_base"].map(_fmt_n_base),
+            "Alerta": _tbl["es_spike"].map(lambda x: "Sí" if x else "No"),
+        }),
+        use_container_width=True,
+        hide_index=True,
+        key="ctx_umbral_por_semana",
     )
 
     st.markdown("---")
