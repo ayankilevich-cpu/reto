@@ -1697,6 +1697,14 @@ def render_analisis_contextual():
     avg_pct = float(df_chart["pct_odio"].mean()) if not df_chart.empty else 0
     spike_threshold = avg_pct * 1.5
 
+    st.markdown(
+        f"El **umbral de alerta** (línea roja punteada, **{spike_threshold:.1f}%**) no es un valor fijo: "
+        f"se calcula como **1,5 × el promedio** del % de odio (**{avg_pct:.1f}%**) entre las semanas del gráfico "
+        f"(cada una con al menos **{MIN_MSGS_CHART}** mensajes). "
+        "Sirve para marcar semanas con un pico **respecto del nivel habitual** del propio histórico; "
+        "si el promedio cambia, el umbral se mueve (por ejemplo, un promedio de 3,6% implica umbral 5,4%)."
+    )
+
     colors = []
     text_labels = []
     for _, row in df_chart.iterrows():
