@@ -3,14 +3,26 @@ Dashboard RETO — Monitorización de discurso de odio en redes sociales.
 
 Streamlit app con filtros interactivos que consulta PostgreSQL (reto_db).
 
-Secciones:
-  1. Panel general (KPIs)
-  2. Distribución por categoría de odio
-  3. Ranking de medios
-  4. Comparativa baseline vs LLM
-  5. Calidad del etiquetado LLM
-  6. Términos de odio más frecuentes
-  7. Análisis Art. 510 — Potenciales delitos de odio
+Secciones del sidebar (orden actual):
+  - Proyecto ReTo
+  - Panel general
+  - Categorías de odio (LLM)
+  - Ranking de medios
+  - Análisis contextual
+  - Comparativa modelos
+  - Calidad LLM
+  - Términos frecuentes
+  - Dataset Gold
+  - Análisis Art. 510
+  - Anotación y validación (YouTube, Art. 510, validación LLM YT y X)
+  - Delitos de odio (oficial)
+
+Checklist de verificación manual (Fase 0 — tras cambios en routing o UI):
+  - Login / roles (admin, editor, viewer) y secciones restringidas
+  - Cada ítem del sidebar abre sin error y muestra contenido esperado
+  - Anotación: las cuatro pestañas y guardado donde aplique
+  - Art. 510: filtros y, si se usa, llamada a API
+  - Refrescar datos (sidebar) no rompe la sesión
 
 Uso:
   streamlit run dashboard.py
@@ -29,6 +41,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 
@@ -211,7 +224,6 @@ def _load_valid_media_map() -> Tuple[Set[str], Dict[str, str]]:
     """Carga el JSON con los medios válidos y el mapeo handle → nombre.
     El JSON se genera a partir del Excel maestro y se despliega junto a la app.
     """
-    import json
     with open(_MEDIOS_JSON_PATH, encoding="utf-8") as f:
         data = json.load(f)
     valid_names: Set[str] = set(data["valid_names"])
@@ -6597,31 +6609,77 @@ def render_footer():
 # ============================================================
 # MAIN
 # ============================================================
+_SECTION_RENDERERS: Dict[str, Callable[[], None]] = {
+    "Proyecto ReTo": render_proyecto,
+    "Panel general": render_panel_general,
+    "Categorías de odio (LLM)": render_categorias,
+    "Ranking de medios": render_ranking_medios,
+    "Análisis contextual": render_analisis_contextual,
+    "Comparativa modelos": render_comparativa,
+    "Calidad LLM": render_calidad_llm,
+    "Términos frecuentes": render_terminos,
+    "Dataset Gold": render_gold_dataset,
+    "Análisis Art. 510": render_analisis_art510,
+    "Anotación y validación": render_anotacion,
+    "Delitos de odio (oficial)": render_delitos,
+}
+
+
+def _scroll_main_to_top() -> None:
+    """Scroll al inicio del área principal al cambiar de sección (Streamlit suele conservar scroll)."""
+    components.html(
+        """
+        <script>
+        (function () {
+            function goTop() {
+                const doc = window.parent.document;
+                const tryScroll = (el) => {
+                    if (!el) return;
+                    el.scrollTop = 0;
+                    if (typeof el.scrollTo === "function") {
+                        el.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                    }
+                };
+                doc.querySelectorAll(
+                    '[data-testid="stAppViewContainer"], '
+                    + 'section[data-testid="stMain"], section.main'
+                ).forEach(tryScroll);
+                tryScroll(doc.documentElement);
+                tryScroll(doc.body);
+                window.parent.scrollTo(0, 0);
+            }
+            goTop();
+            setTimeout(goTop, 50);
+            setTimeout(goTop, 150);
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def main():
     if not _check_auth():
         _render_login()
         return
 
     section = render_sidebar()
-
-    _SECTION_RENDERERS = {
-        "Proyecto ReTo": render_proyecto,
-        "Panel general": render_panel_general,
-        "Categorías de odio (LLM)": render_categorias,
-        "Ranking de medios": render_ranking_medios,
-        "Análisis contextual": render_analisis_contextual,
-        "Comparativa modelos": render_comparativa,
-        "Calidad LLM": render_calidad_llm,
-        "Términos frecuentes": render_terminos,
-        "Dataset Gold": render_gold_dataset,
-        "Análisis Art. 510": render_analisis_art510,
-        "Anotación y validación": render_anotacion,
-        "Delitos de odio (oficial)": render_delitos,
-    }
+    prev_section = st.session_state.get("_nav_section")
+    section_changed = prev_section != section
+    st.session_state["_nav_section"] = section
 
     renderer = _SECTION_RENDERERS.get(section)
     if renderer:
         renderer()
+    else:
+        st.error(
+            f"Sección no reconocida: {section!r}. "
+            "Recargá la página o informá al administrador."
+        )
+
+    if section_changed:
+        _scroll_main_to_top()
 
     render_footer()
 
