@@ -33,7 +33,9 @@ import streamlit as st
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 
-sys.path.insert(0, str(Path(__file__).parent))
+_RETO_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(_RETO_ROOT / "automatizacion_diaria"))
+sys.path.insert(0, str(_RETO_ROOT))
 from db_utils import get_conn
 
 # ============================================================
@@ -604,7 +606,51 @@ def load_terminos(
     return df
 
 
-TERMINOS_EXCLUSION_JSON = Path(__file__).parent / "automatizacion_diaria" / "terminos_excluidos_visualizacion.json"
+_TERMINOS_NEUTROS_EMBEBIDOS = frozenset({
+    'ahora', 'algo', 'alguna', 'algunos', 'algún', 'allí', 'ambos', 'ante', 'antes', 'aquel',
+    'aquí', 'argentina', 'argentinas', 'argentino', 'argentinos', 'así', 'aunque', 'año', 'años',
+    'bien', 'buen', 'buena', 'bueno', 'cada', 'casi', 'caso', 'casos', 'ciudad', 'ciudadana',
+    'ciudadanas', 'ciudadano', 'ciudadanos', 'ciudades', 'como', 'con', 'congreso',
+    'constitucion', 'constitución', 'contra', 'corte', 'cosa', 'cosas', 'creo', 'cual', 'cuales',
+    'cuando', 'cuanto', 'cómo', 'dado', 'debe', 'deben', 'decir', 'del', 'democracia', 'demás',
+    'después', 'dice', 'dicho', 'dijo', 'diputada', 'diputado', 'diputados', 'donde', 'dos',
+    'durante', 'día', 'días', 'e', 'ejemplo', 'el', 'eleccion', 'elecciones', 'ella', 'ellas',
+    'ellos', 'en', 'entonces', 'entre', 'era', 'eran', 'es', 'esa', 'esas', 'ese', 'eso', 'esos',
+    'español', 'española', 'españolas', 'españoles', 'esta', 'estaba', 'estado', 'estados',
+    'este', 'esto', 'estos', 'está', 'están', 'etc', 'evidentemente', 'favor', 'forma', 'fue',
+    'fueron', 'general', 'gente', 'gobierno', 'gobiernos', 'gran', 'grande', 'grandes', 'grupo',
+    'ha', 'haber', 'había', 'hace', 'hacer', 'hacia', 'hacía', 'hasta', 'hay', 'he', 'hecho',
+    'hechos', 'hombre', 'hombres', 'hora', 'horas', 'hoy', 'iba', 'igual', 'importante', 'junto',
+    'justicia', 'la', 'las', 'le', 'les', 'ley', 'leyes', 'lo', 'los', 'luego', 'lugar', 'manera',
+    'maneras', 'mas', 'mayor', 'mayores', 'mayoría', 'me', 'mediante', 'medios', 'mejor', 'menos',
+    'menudo', 'mi', 'mientras', 'ministerio', 'ministra', 'ministro', 'ministros', 'misma',
+    'mismas', 'mismo', 'mismos', 'modo', 'momento', 'momentos', 'mucha', 'muchas', 'mucho',
+    'muchos', 'mujer', 'mujeres', 'muy', 'más', 'nacional', 'nacionales', 'nada', 'nadie', 'ni',
+    'ninguna', 'ningún', 'no', 'nos', 'nosotros', 'noticia', 'noticias', 'nueva', 'nuevas',
+    'nuevo', 'nuevos', 'nunca', 'o', 'obra', 'oposicion', 'oposición', 'otra', 'otras', 'otro',
+    'otros', 'para', 'parte', 'partes', 'partido', 'partidos', 'pasado', 'país', 'países', 'peor',
+    'periodista', 'periodistas', 'pero', 'persona', 'personas', 'poca', 'pocas', 'poco', 'pocos',
+    'podemos', 'poder', 'podría', 'podrían', 'politica', 'politicas', 'politico', 'politicos',
+    'política', 'políticas', 'político', 'políticos', 'por', 'porque', 'posible', 'prensa',
+    'presidencia', 'presidenta', 'presidente', 'presidentes', 'primer', 'primera', 'primeras',
+    'primeros', 'problema', 'problemas', 'propia', 'propias', 'propio', 'propios', 'provincia',
+    'provincias', 'proyecto', 'proyectos', 'pueblo', 'pueblos', 'puede', 'pueden', 'pues', 'que',
+    'quien', 'quienes', 'quién', 'qué', 'realidad', 'realmente', 'republica', 'república',
+    'respecto', 'sabe', 'salvo', 'se', 'sea', 'según', 'senado', 'senador', 'senadora',
+    'senadores', 'ser', 'si', 'sido', 'siempre', 'sin', 'sino', 'sistema', 'situación', 'sobre',
+    'sola', 'solamente', 'solo', 'son', 'su', 'sus', 'sé', 'sí', 'tal', 'también', 'tampoco',
+    'tan', 'tanta', 'tanto', 'te', 'tema', 'temas', 'tenemos', 'tener', 'tenía', 'tenían',
+    'tercer', 'tercera', 'tiempo', 'tiempos', 'tiene', 'tienen', 'toda', 'todas', 'todo', 'todos',
+    'tras', 'través', 'tribunal', 'tribunales', 'tu', 'tus', 'tuvo', 'té', 'u', 'un', 'una',
+    'unas', 'uno', 'unos', 'usted', 'va', 'vamos', 'van', 'varias', 'varios', 'veces', 'vez',
+    'vida', 'vidas', 'viene', 'vienen', 'vista', 'voto', 'votos', 'voy', 'vuestra', 'vuestro',
+    'y', 'ya', 'yo', 'él', 'ésa', 'ésas', 'ése', 'ésos', 'ésta', 'éstas', 'éste', 'éstos',
+    'última', 'últimas', 'último', 'últimos',
+})
+
+TERMINOS_EXCLUSION_JSON = (
+    Path(__file__).resolve().parent / "automatizacion_diaria" / "terminos_excluidos_visualizacion.json"
+)
 
 
 def _normalize_term_for_filter(token: str) -> str:
@@ -617,10 +663,9 @@ def _normalize_term_for_filter(token: str) -> str:
     )
 
 
-@st.cache_data(ttl=300)
 def load_terminos_exclusion_set() -> frozenset:
-    """Términos neutros/genéricos a excluir del ranking (JSON en automatizacion_diaria)."""
-    raw: List[Any] = []
+    """Carga exclusiones: JSON si existe, si no la lista embebida."""
+    raw: list = []
     if TERMINOS_EXCLUSION_JSON.exists():
         try:
             data = json.loads(TERMINOS_EXCLUSION_JSON.read_text(encoding="utf-8"))
@@ -628,10 +673,10 @@ def load_terminos_exclusion_set() -> frozenset:
                 raw = data.get("excluir") or []
             elif isinstance(data, list):
                 raw = data
-        except (json.JSONDecodeError, OSError):
+        except Exception:
             raw = []
-    if not isinstance(raw, list):
-        raw = []
+    if not raw:
+        return frozenset({_normalize_term_for_filter(t) for t in _TERMINOS_NEUTROS_EMBEBIDOS} - {""})
     out = {_normalize_term_for_filter(str(x)) for x in raw if str(x).strip()}
     out.discard("")
     return frozenset(out)
@@ -1825,9 +1870,15 @@ def render_terminos():
 
     counter = Counter(all_terms)
     n_tokens_antes = len(counter)
+    exclude = frozenset()
     if filtro_neutros:
         exclude = load_terminos_exclusion_set()
         counter = _filter_counter_terminos_neutros(counter, exclude)
+        if len(exclude) == 0:
+            st.warning(
+                "La lista de exclusiones está vacía (ni JSON ni respaldo embebido). "
+                "Revisa el despliegue o el archivo de configuración."
+            )
     if not counter:
         st.warning(
             "No quedan términos tras aplicar el filtro de neutros. "
@@ -1836,7 +1887,8 @@ def render_terminos():
         return
     if filtro_neutros and n_tokens_antes:
         st.caption(
-            f"Términos distintos: {len(counter):,} (tras filtro; {n_tokens_antes:,} antes del filtro)."
+            f"Términos distintos: {len(counter):,} tras filtro ({n_tokens_antes:,} antes; "
+            f"{len(exclude):,} lemas en lista de exclusión)."
         )
 
     _nc = len(counter)
