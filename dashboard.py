@@ -583,7 +583,7 @@ def load_terminos(
     need_llm_join = False
 
     if solo_candidatos:
-        conds.append("pm.has_hate_terms_match = TRUE")
+        conds.append("(pm.is_candidate = TRUE OR pm.has_hate_terms_match = TRUE)")
     if platforms:
         conds.append("pm.platform IN %s"); params.append(tuple(platforms))
     if medios:
@@ -1846,7 +1846,12 @@ def render_terminos():
     sel_periodo = fc4.selectbox(
         "Período", options=list(PERIODO_OPTIONS.keys()), index=0, key="term_periodo",
     )
-    solo_candidatos = fc5.checkbox("Solo candidatos a odio", value=True, key="term_cand")
+    solo_candidatos = fc5.checkbox(
+        "Solo candidatos a odio",
+        value=True,
+        key="term_cand",
+        help="Incluye mensajes con candidato a odio o con coincidencia en el lexicón (útil para YouTube).",
+    )
 
     filtro_neutros = st.checkbox(
         "Ocultar términos neutros / genéricos (lista del proyecto)",
