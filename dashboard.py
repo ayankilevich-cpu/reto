@@ -693,6 +693,22 @@ def _filter_counter_terminos_neutros(counter: Counter, exclude: frozenset) -> Co
     return out
 
 
+def _parse_exclusiones_usuario(texto: str) -> frozenset:
+    """Palabras separadas por coma, punto y coma, | o salto de línea."""
+    if not texto or not str(texto).strip():
+        return frozenset()
+    out: Set[str] = set()
+    for line in str(texto).splitlines():
+        for seg in line.replace(";", ",").replace("|", ",").split(","):
+            seg = seg.strip()
+            if not seg:
+                continue
+            nt = _normalize_term_for_filter(seg)
+            if nt:
+                out.add(nt)
+    return frozenset(out)
+
+
 # ============================================================
 # SIDEBAR
 # ============================================================
@@ -1847,6 +1863,17 @@ def render_terminos():
             f"`{TERMINOS_EXCLUSION_JSON}`"
         )
 
+    extra_txt = st.text_area(
+        "Palabras adicionales a excluir (opcional)",
+        key="term_excluir_extra",
+        height=100,
+        placeholder="social\nvecinos\npedro",
+        help=(
+            "Una por línea o separadas por coma. Se unen a la lista del proyecto si "
+            "«Ocultar términos neutros» está activo; si lo desactivás, solo se aplican estas palabras."
+        ),
+    )
+
     df = load_terminos(
         platforms=tuple(sel_platforms) if sel_platforms else None,
         medios=tuple(sel_medios) if sel_medios else None,
@@ -1870,25 +1897,31 @@ def render_terminos():
 
     counter = Counter(all_terms)
     n_tokens_antes = len(counter)
-    exclude = frozenset()
-    if filtro_neutros:
-        exclude = load_terminos_exclusion_set()
+    exclude_extra = _parse_exclusiones_usuario(extra_txt)
+    exclude_base = load_terminos_exclusion_set() if filtro_neutros else frozenset()
+    if filtro_neutros and len(exclude_base) == 0:
+        st.warning(
+            "La lista de exclusiones del proyecto está vacía (ni JSON ni respaldo embebido). "
+            "Revisa el despliegue o el archivo de configuración."
+        )
+    exclude = exclude_base | exclude_extra
+    if filtro_neutros or exclude_extra:
         counter = _filter_counter_terminos_neutros(counter, exclude)
-        if len(exclude) == 0:
-            st.warning(
-                "La lista de exclusiones está vacía (ni JSON ni respaldo embebido). "
-                "Revisa el despliegue o el archivo de configuración."
-            )
     if not counter:
         st.warning(
-            "No quedan términos tras aplicar el filtro de neutros. "
-            "Desactiva «Ocultar términos neutros / genéricos» o amplía filtros de plataforma/medio/período."
+            "No quedan términos tras aplicar los filtros de exclusión. "
+            "Revisa las palabras adicionales, desactiva «Ocultar términos neutros» o amplía plataforma/medio/período."
         )
         return
-    if filtro_neutros and n_tokens_antes:
+    if (filtro_neutros or exclude_extra) and n_tokens_antes:
+        partes = []
+        if filtro_neutros:
+            partes.append(f"{len(exclude_base):,} lemas del proyecto")
+        if exclude_extra:
+            partes.append(f"{len(exclude_extra):,} adicionales en este panel")
         st.caption(
             f"Términos distintos: {len(counter):,} tras filtro ({n_tokens_antes:,} antes; "
-            f"{len(exclude):,} lemas en lista de exclusión)."
+            + "; ".join(partes) + ")."
         )
 
     _nc = len(counter)
