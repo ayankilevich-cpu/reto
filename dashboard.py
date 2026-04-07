@@ -37,7 +37,22 @@ _RETO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_RETO_ROOT / "automatizacion_diaria"))
 sys.path.insert(0, str(_RETO_ROOT))
 from db_utils import get_conn
-from terminos_exclusion_oficial import TERMINOS_EXCLUSION_LEMAS
+try:
+    from terminos_exclusion_oficial import TERMINOS_EXCLUSION_LEMAS
+except ImportError:
+    import importlib.util as _ilu
+    for _p in (
+        _RETO_ROOT / "terminos_exclusion_oficial.py",
+        _RETO_ROOT / "automatizacion_diaria" / "terminos_exclusion_oficial.py",
+    ):
+        if _p.exists():
+            _spec = _ilu.spec_from_file_location("terminos_exclusion_oficial", _p)
+            _mod = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            TERMINOS_EXCLUSION_LEMAS = _mod.TERMINOS_EXCLUSION_LEMAS
+            break
+    else:
+        TERMINOS_EXCLUSION_LEMAS = frozenset()
 
 # ============================================================
 # CONFIG
