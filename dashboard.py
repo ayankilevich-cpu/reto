@@ -5883,8 +5883,144 @@ _CARD_CSS = """
 """
 
 
+def _render_proyecto_reto_institucional_admin():
+    """
+    Contenido institucional del proyecto (UE, consorcio, alcance).
+    Visible solo para rol admin hasta validación y aprobación.
+    """
+    st.markdown(
+        """
+        <div style="background:#fff8e6;border:1px solid #f6d365;border-radius:10px;padding:0.75rem 1rem;margin-bottom:1rem;font-size:0.9rem;color:#744210;">
+            <strong>Borrador</strong> — Este bloque solo lo ven los usuarios con perfil <strong>Administrador</strong>.
+            El resto de perfiles sigue viendo la sección tal como estaba definida.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div class="reto-hero" style="background:linear-gradient(135deg,#1e4976 0%,#2b6cb0 100%);">
+            <h1>¿Qué es ReTo?</h1>
+            <h3>Red de Tolerancia</h3>
+            <p>
+                El proyecto <strong>Red de Tolerancia (ReTo)</strong> es una iniciativa estratégica europea,
+                financiada por el programa <strong>CERV-2024-CHAR-LITI</strong> de la Unión Europea,
+                orientada a combatir el discurso y los delitos de odio en España.
+                Con una duración de <strong>24 meses</strong> (junio 2025 – mayo 2027), toma a
+                <strong>Andalucía</strong> como modelo regional para su posterior replicación a nivel nacional.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    o1, o2 = st.columns(2)
+    with o1:
+        st.markdown(
+            """
+            <div class="reto-card">
+                <h4>Objetivo general</h4>
+                <p style="color:#4a5568;font-size:0.95rem;margin:0;">
+                    Crear un marco integral de colaboración entre la sociedad civil,
+                    autoridades públicas y agentes comunitarios para fortalecer la capacidad de
+                    <strong>prevenir y responder</strong> al odio.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with o2:
+        st.markdown(
+            """
+            <div class="reto-card">
+                <h4>Objetivos específicos</h4>
+                <ul>
+                    <li>Mejorar la coordinación entre fuerzas del orden y organizaciones civiles para facilitar la denuncia.</li>
+                    <li>Fomentar la recopilación de datos con herramientas avanzadas (incl. IA) para entender tendencias del odio.</li>
+                    <li>Trabajar el tema desde la cultura, el deporte y los medios de comunicación.</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        "<h3 style='color:#2b6cb0;margin:1rem 0 0.6rem 0;'>Consorcio y paquetes de trabajo</h3>",
+        unsafe_allow_html=True,
+    )
+    consorcio_rows = [
+        ("CIFAL Málaga", "Coordinación · WP1"),
+        ("Fundación CIEDES", "Investigación y datos · WP2"),
+        ("Movimiento Contra la Intolerancia (MCI)", "Concienciación y apoyo a víctimas · WP3"),
+        ("Colegio Profesional de Periodistas de Andalucía (CPPA)", "Ética en medios · WP4"),
+        ("Comité Olímpico Español (COE)", "Deporte e inclusión · WP5"),
+        ("Asociación La Guajira", "Cultura y arte · WP6"),
+    ]
+    otros = "Otros socios: Universidad de Almería, Almería Acoge, Yo Soy El Otro."
+
+    cons_html = '<div class="reto-card"><table style="width:100%;border-collapse:collapse;font-size:0.92rem;">'
+    for org, rol in consorcio_rows:
+        cons_html += (
+            f"<tr style='border-bottom:1px solid #e2e8f0;'>"
+            f"<td style='padding:0.45rem 0;vertical-align:top;'><strong>{org}</strong></td>"
+            f"<td style='padding:0.45rem 0;color:#4a5568;'>{rol}</td></tr>"
+        )
+    cons_html += "</table>"
+    cons_html += f"<p class='card-note' style='margin-top:0.75rem;'>{otros}</p></div>"
+    st.markdown(cons_html, unsafe_allow_html=True)
+
+    st.markdown(
+        "<h3 style='color:#2b6cb0;margin:1rem 0 0.6rem 0;'>Alcance y actividades destacadas</h3>",
+        unsafe_allow_html=True,
+    )
+    a1, a2 = st.columns(2)
+    with a1:
+        st.markdown(
+            """
+            <div class="reto-card">
+                <h4>Formación y sensibilización</h4>
+                <ul>
+                    <li><strong>Fuerzas de seguridad:</strong> capacitación para investigación y asesoramiento a víctimas (reducción de la infra denuncia).</li>
+                    <li><strong>Periodistas y medios:</strong> tratamiento ético, identificación de discursos de odio y lucha contra la desinformación.</li>
+                    <li><strong>Deporte:</strong> formación de entrenadores y voluntarios en valores olímpicos, igualdad y espacios seguros.</li>
+                    <li><strong>Comunidad y jóvenes:</strong> talleres culturales para desafiar estereotipos.</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with a2:
+        st.markdown(
+            """
+            <div class="reto-card">
+                <h4>Otras líneas de trabajo</h4>
+                <ul>
+                    <li>Tecnología e IA: base de datos y herramientas para monitorizar el odio en redes (incl. análisis predictivo y OSINT).</li>
+                    <li>Apoyo a víctimas: puntos de atención con asistencia legal.</li>
+                    <li>Eventos deportivos y culturales para cohesión social.</li>
+                    <li>Producción audiovisual y estudios abiertos al público.</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        '<div class="reto-alert">Los paneles siguientes de este dashboard describen el '
+        "<strong>análisis digital y la metodología</strong> del componente de monitorización; "
+        "no sustituyen la información institucional completa del consorcio.</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+
+
 def render_proyecto():
     st.markdown(_CARD_CSS, unsafe_allow_html=True)
+
+    if st.session_state.get("user_role") == "admin":
+        _render_proyecto_reto_institucional_admin()
+        st.markdown("---")
 
     # --- Hero ---
     st.markdown(
