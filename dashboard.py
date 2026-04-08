@@ -4889,6 +4889,68 @@ def _render_validacion_art510(annotator: str):
         st.rerun()
 
 
+def _render_art510_validacion_humana(summary: dict):
+    """Resumen visual de validaciones humanas Art. 510."""
+    total_val = int(summary.get("total_validados", 0) or 0)
+    if total_val <= 0:
+        return
+
+    st.markdown("### Validación humana")
+    confirmados = int(summary.get("total_confirmados", 0) or 0)
+    rechazados = int(summary.get("total_rechazados", 0) or 0)
+    tasa_precision = (confirmados / total_val * 100) if total_val else 0
+
+    v1, v2, v3, v4 = st.columns(4)
+    v1.metric("Revisados por humano", f"{total_val}")
+    v2.metric("Confirmados como delito", f"{confirmados}")
+    v3.metric("Rechazados", f"{rechazados}")
+    v4.metric("Precisión del LLM", f"{tasa_precision:.0f}%")
+
+    try:
+        with get_conn() as conn:
+            df_vh = pd.read_sql(
+                """
+                SELECT vh.validacion_humana, vh.apartado_510_final
+                FROM processed.validacion_art510_humana vh
+                ORDER BY vh.annotation_date DESC
+                """,
+                conn,
+            )
+    except Exception:
+        df_vh = pd.DataFrame()
+
+    if df_vh.empty:
+        return
+
+    c1, c2 = st.columns(2)
+    with c1:
+        vc = df_vh["validacion_humana"].fillna("sin_dato").value_counts().reset_index()
+        vc.columns = ["Decisión", "Cantidad"]
+        vc["Decisión"] = vc["Decisión"].map(
+            {"confirmado": "Confirmado", "rechazado": "Rechazado", "corregido": "Corregido"}
+        ).fillna("Sin dato")
+        fig_d = px.pie(
+            vc,
+            names="Decisión",
+            values="Cantidad",
+            title="Distribución de decisiones humanas",
+            hole=0.35,
+        )
+        fig_d.update_layout(height=330)
+        st.plotly_chart(fig_d, use_container_width=True, key="art510_vh_decisiones_root")
+
+    with c2:
+        df_ap = df_vh[df_vh["apartado_510_final"].notna() & (df_vh["apartado_510_final"].astype(str) != "")]
+        if df_ap.empty:
+            st.info("Sin apartado humano registrado todavía.")
+        else:
+            ap = df_ap["apartado_510_final"].map(lambda x: APARTADO_LABELS.get(x, x)).value_counts().reset_index()
+            ap.columns = ["Apartado", "Cantidad"]
+            fig_ap = px.bar(ap, x="Apartado", y="Cantidad", title="Apartado Art. 510.1 (decisión humana)")
+            fig_ap.update_layout(height=330, showlegend=False)
+            st.plotly_chart(fig_ap, use_container_width=True, key="art510_vh_apartado_root")
+
+
 def _vllm_platform_where(platform_key: str) -> str:
     return "pm.platform = 'youtube'" if platform_key == "youtube" else "pm.platform IN ('x', 'twitter')"
 
