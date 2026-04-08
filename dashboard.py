@@ -2948,6 +2948,26 @@ def load_art510_data(
     return df
 
 
+def _art510_split_last_run(df_all: pd.DataFrame, gap_minutes: int = 20) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Separa última ejecución vs histórico previo usando cortes por gap temporal."""
+    if df_all.empty or "evaluacion_date" not in df_all.columns:
+        return pd.DataFrame(), pd.DataFrame()
+
+    work = df_all.copy()
+    work["evaluacion_date"] = pd.to_datetime(work["evaluacion_date"], errors="coerce")
+    work = work.dropna(subset=["evaluacion_date"]).sort_values("evaluacion_date").reset_index(drop=True)
+    if work.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    gap = work["evaluacion_date"].diff().dt.total_seconds().fillna(0)
+    work["_run_cluster"] = (gap > (gap_minutes * 60)).cumsum()
+    last_cluster = work["_run_cluster"].max()
+
+    df_last = work[work["_run_cluster"] == last_cluster].drop(columns=["_run_cluster"]).copy()
+    df_prev = work[work["_run_cluster"] != last_cluster].drop(columns=["_run_cluster"]).copy()
+    return df_last, df_prev
+
+
 @st.cache_data(ttl=300)
 def load_art510_summary() -> dict:
     """KPIs generales de Art. 510 (sin filtros)."""
@@ -3479,6 +3499,75 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
             f"Mostrando {len(df):,} mensajes (filtro activo: solo potenciales delitos). "
             f"Desmarca el filtro para ver todos."
         )
+
+    # ── Comparativa última ejecución vs histórico previo ──
+    df_cmp_all = load_art510_data(
+        platforms=tuple(sel_platforms) if sel_platforms else None,
+        label_sources=tuple(sel_sources) if sel_sources else None,
+        solo_delitos=False,
+    )
+    df_last_run, df_prev_runs = _art510_split_last_run(df_cmp_all, gap_minutes=20)
+    if not df_last_run.empty:
+        st.markdown("---")
+        st.markdown("### Última ejecución vs histórico previo")
+
+        def _run_stats(_df: pd.DataFrame) -> Dict[str, float]:
+            total = int(len(_df))
+            potencial = int((_df["es_potencial_delito"] == True).sum()) if total else 0
+            pct = (potencial / total * 100) if total else 0.0
+            return {"total": total, "potencial": potencial, "pct": pct}
+
+        s_last = _run_stats(df_last_run)
+        s_prev = _run_stats(df_prev_runs)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Última ejecución (mensajes)", f"{s_last['total']:,}")
+        c2.metric("Potenciales delito (última)", f"{s_last['potencial']:,}")
+        c3.metric("% potencial delito (última)", f"{s_last['pct']:.1f}%")
+
+        if not df_prev_runs.empty:
+            c4, c5, c6 = st.columns(3)
+            c4.metric("Histórico previo (mensajes)", f"{s_prev['total']:,}")
+            c5.metric("Potenciales delito (previo)", f"{s_prev['potencial']:,}")
+            c6.metric("% potencial delito (previo)", f"{s_prev['pct']:.1f}%")
+
+            comp_df = pd.DataFrame([
+                {"Bloque": "Última ejecución", "Métrica": "% potencial delito", "Valor": s_last["pct"]},
+                {"Bloque": "Histórico previo", "Métrica": "% potencial delito", "Valor": s_prev["pct"]},
+                {"Bloque": "Última ejecución", "Métrica": "Total mensajes", "Valor": s_last["total"]},
+                {"Bloque": "Histórico previo", "Métrica": "Total mensajes", "Valor": s_prev["total"]},
+            ])
+            g1, g2 = st.columns(2)
+            with g1:
+                fig_pct = px.bar(
+                    comp_df[comp_df["Métrica"] == "% potencial delito"],
+                    x="Bloque",
+                    y="Valor",
+                    color="Bloque",
+                    title="Comparación de % potencial delito",
+                    color_discrete_map={
+                        "Última ejecución": COLORS["warning"],
+                        "Histórico previo": COLORS["accent"],
+                    },
+                )
+                fig_pct.update_layout(height=340, showlegend=False, yaxis_title="%")
+                st.plotly_chart(fig_pct, use_container_width=True, key="art510_comp_pct_run")
+            with g2:
+                fig_total = px.bar(
+                    comp_df[comp_df["Métrica"] == "Total mensajes"],
+                    x="Bloque",
+                    y="Valor",
+                    color="Bloque",
+                    title="Comparación de volumen evaluado",
+                    color_discrete_map={
+                        "Última ejecución": COLORS["warning"],
+                        "Histórico previo": COLORS["accent"],
+                    },
+                )
+                fig_total.update_layout(height=340, showlegend=False, yaxis_title="Mensajes")
+                st.plotly_chart(fig_total, use_container_width=True, key="art510_comp_total_run")
+        else:
+            st.info("No hay histórico previo para comparar; solo existe la última ejecución con estos filtros.")
 
     # ── Métricas de validación humana (histórico) ──
     if validated > 0:
