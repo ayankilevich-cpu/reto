@@ -83,6 +83,7 @@ COLORS = {
     "warning": "#F39C12",
     "success": "#27AE60",
     "muted": "#95A5A6",
+    "current_week": "#EAB308",
 }
 
 CAT_COLORS = [
@@ -1496,21 +1497,51 @@ def render_analisis_contextual():
         st.warning("No hay datos de análisis semanal. Ejecutá `analisis_contexto_semanal.py` para generar el histórico.")
         return
 
+    # Evita semanas históricas fuera del período real de medición.
+    FECHA_INICIO_MEDICION = pd.Timestamp("2025-11-24")
+    df["semana_inicio"] = pd.to_datetime(df["semana_inicio"], errors="coerce")
+    df["semana_fin"] = pd.to_datetime(df["semana_fin"], errors="coerce")
+    df = df[df["semana_inicio"] >= FECHA_INICIO_MEDICION].copy()
+    if df.empty:
+        st.warning("No hay semanas disponibles desde el inicio de medición (24/11/2025).")
+        return
+
     df["semana_label"] = df["semana_inicio"].apply(
-        lambda d: d.strftime("%d/%m") if hasattr(d, "strftime") else str(d)
+        lambda d: d.strftime("%d/%m/%y") if hasattr(d, "strftime") else str(d)
     )
 
     # --- Timeline ---
     st.subheader("Evolución semanal del % de odio")
 
-    avg_pct = float(df["pct_odio"].mean()) if not df.empty else 0
+    hoy = pd.Timestamp.today().date()
+
+    def _semana_incluye_hoy(si, sf, hoy_ref) -> bool:
+        if si is None or sf is None or pd.isna(si) or pd.isna(sf):
+            return False
+        try:
+            return si.date() <= hoy_ref <= sf.date()
+        except Exception:
+            return False
+
+    # Promedio y umbral sobre semanas cerradas para no sesgar con la semana parcial.
+    mask_cerrada = ~df.apply(
+        lambda r: _semana_incluye_hoy(r["semana_inicio"], r["semana_fin"], hoy),
+        axis=1,
+    )
+    df_cerradas = df[mask_cerrada]
+    avg_pct = float(df_cerradas["pct_odio"].mean()) if not df_cerradas.empty else float(df["pct_odio"].mean())
     spike_threshold = avg_pct * 1.5
 
     fig_timeline = go.Figure()
-    colors = [
-        COLORS["danger"] if row["es_spike"] else COLORS["accent"]
-        for _, row in df.iterrows()
-    ]
+    colors = []
+    for _, row in df.iterrows():
+        es_actual = _semana_incluye_hoy(row["semana_inicio"], row["semana_fin"], hoy)
+        if es_actual:
+            colors.append(COLORS["current_week"])
+        elif row["es_spike"]:
+            colors.append(COLORS["danger"])
+        else:
+            colors.append(COLORS["accent"])
     fig_timeline.add_trace(go.Bar(
         x=df["semana_label"],
         y=df["pct_odio"],
@@ -1544,8 +1575,10 @@ def render_analisis_contextual():
     st.plotly_chart(fig_timeline, use_container_width=True, key="ctx_timeline")
 
     st.caption(
-        f"🔴 Barras rojas = semanas spike (>{spike_threshold:.1f}%) · "
-        f"🔵 Barras azules = semanas normales"
+        f"🟡 Amarillo = semana actual · "
+        f"🔴 Rojo = semana spike (>{spike_threshold:.1f}%) · "
+        f"🔵 Azul = semana normal · "
+        "Período mostrado desde 24/11/2025"
     )
 
     st.markdown("---")
