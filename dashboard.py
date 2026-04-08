@@ -1497,6 +1497,10 @@ def render_analisis_contextual():
         st.warning("No hay datos de análisis semanal. Ejecutá `analisis_contexto_semanal.py` para generar el histórico.")
         return
 
+    for _col in ("promedio_referencia_pct", "umbral_spike_pct", "n_semanas_base"):
+        if _col not in df.columns:
+            df[_col] = pd.NA
+
     # Evita semanas históricas fuera del período real de medición.
     FECHA_INICIO_MEDICION = pd.Timestamp("2025-11-24")
     df["semana_inicio"] = pd.to_datetime(df["semana_inicio"], errors="coerce")
@@ -1531,6 +1535,13 @@ def render_analisis_contextual():
     df_cerradas = df[mask_cerrada]
     avg_pct = float(df_cerradas["pct_odio"].mean()) if not df_cerradas.empty else float(df["pct_odio"].mean())
     spike_threshold = avg_pct * 1.5
+
+    st.markdown(
+        f"Las **líneas horizontales** muestran el **promedio vigente** (**{avg_pct:.1f}%**) "
+        f"y el **umbral vigente** (**{spike_threshold:.1f}%**, 1,5x) calculados sobre semanas cerradas. "
+        "El estado de **alerta de cada semana cerrada** (rojo/azul) se toma del valor "
+        "**congelado en base de datos** (`es_spike`) y **no se recalcula retroactivamente**."
+    )
 
     fig_timeline = go.Figure()
     colors = []
@@ -1576,8 +1587,8 @@ def render_analisis_contextual():
 
     st.caption(
         f"🟡 Amarillo = semana actual · "
-        f"🔴 Rojo = semana spike (>{spike_threshold:.1f}%) · "
-        f"🔵 Azul = semana normal · "
+        "🔴/🔵 = alerta cerrada Sí/No guardada en BD · "
+        f"Líneas = promedio/umbral vigentes ({avg_pct:.1f}% / {spike_threshold:.1f}%) · "
         "Período mostrado desde 24/11/2025"
     )
 
