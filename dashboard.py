@@ -2085,6 +2085,33 @@ def load_gold_full() -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=300)
+def load_dudosos_queue() -> pd.DataFrame:
+    """Carga mensajes marcados como dudosos para revisión posterior."""
+    with get_conn() as conn:
+        df = pd.read_sql(
+            """
+            SELECT vm.message_uuid,
+                   pm.platform,
+                   pm.source_media,
+                   pm.content_original,
+                   vm.annotator_id,
+                   vm.annotation_date
+            FROM processed.validaciones_manuales vm
+            JOIN processed.mensajes pm USING (message_uuid)
+            WHERE vm.odio_flag IS NULL
+            ORDER BY vm.annotation_date DESC, vm.message_uuid DESC
+            LIMIT 500
+            """,
+            conn,
+        )
+    if not df.empty:
+        df["platform_label"] = df["platform"].map(
+            {"x": "X", "twitter": "X", "youtube": "YouTube"}
+        ).fillna(df["platform"])
+    return df
+
+
 def render_gold_dataset():
     """Sección de análisis del dataset gold (LLM + validación humana)."""
     st.header("Dataset Gold — Evaluación del etiquetado")
@@ -2098,6 +2125,30 @@ def render_gold_dataset():
     plat_counts = df["platform_label"].value_counts().to_dict()
     plat_summary = ", ".join(f"{v:,} {k}" for k, v in plat_counts.items())
     st.caption(f"{total_samples:,} mensajes validados manualmente por anotadores humanos ({plat_summary})")
+
+    # ── Cola de dudosos (fuera de gold) ──
+    df_dudosos = load_dudosos_queue()
+    n_dudosos = len(df_dudosos)
+    st.markdown("### Cola de casos dudosos (pendientes de resolución)")
+    st.caption("Estos mensajes fueron marcados como Dudoso por anotadores y no se incorporan al Dataset Gold.")
+    d1, d2 = st.columns(2)
+    d1.metric("Dudosos pendientes", f"{n_dudosos:,}")
+    d2.metric("Muestras en Gold (sin dudosos)", f"{total_samples:,}")
+    if n_dudosos > 0:
+        st.dataframe(
+            df_dudosos.rename(columns={
+                "platform_label": "Plataforma",
+                "source_media": "Medio",
+                "content_original": "Mensaje",
+                "annotator_id": "Anotador",
+                "annotation_date": "Fecha anotación",
+            }),
+            use_container_width=True,
+            hide_index=True,
+            height=260,
+        )
+    else:
+        st.success("No hay casos dudosos pendientes.")
 
     # ── Filtros ──
     st.markdown("### Filtros")
@@ -4582,21 +4633,28 @@ def _save_annotation(
                 humor_flag, annotator_id, date.today(),
             ))
 
-            cur.execute("""
-                INSERT INTO processed.gold_dataset
-                (message_uuid, y_odio_final, y_odio_bin, y_categoria_final,
-                 y_intensidad_final, label_source, split)
-                VALUES (%s, %s, %s, %s, %s, 'human_explicit', %s)
-                ON CONFLICT (message_uuid) DO UPDATE SET
-                    y_odio_final = EXCLUDED.y_odio_final,
-                    y_odio_bin = EXCLUDED.y_odio_bin,
-                    y_categoria_final = EXCLUDED.y_categoria_final,
-                    y_intensidad_final = EXCLUDED.y_intensidad_final,
-                    label_source = EXCLUDED.label_source
-            """, (
-                message_uuid, y_odio_final, y_odio_bin,
-                y_categoria, y_intensidad, split_val,
-            ))
+            if odio_flag is None:
+                # Los casos dudosos quedan fuera del gold dataset.
+                cur.execute(
+                    "DELETE FROM processed.gold_dataset WHERE message_uuid = %s",
+                    (message_uuid,),
+                )
+            else:
+                cur.execute("""
+                    INSERT INTO processed.gold_dataset
+                    (message_uuid, y_odio_final, y_odio_bin, y_categoria_final,
+                     y_intensidad_final, label_source, split)
+                    VALUES (%s, %s, %s, %s, %s, 'human_explicit', %s)
+                    ON CONFLICT (message_uuid) DO UPDATE SET
+                        y_odio_final = EXCLUDED.y_odio_final,
+                        y_odio_bin = EXCLUDED.y_odio_bin,
+                        y_categoria_final = EXCLUDED.y_categoria_final,
+                        y_intensidad_final = EXCLUDED.y_intensidad_final,
+                        label_source = EXCLUDED.label_source
+                """, (
+                    message_uuid, y_odio_final, y_odio_bin,
+                    y_categoria, y_intensidad, split_val,
+                ))
 
             # Anotar también duplicados con mismo contenido
             cur.execute("""
