@@ -4629,20 +4629,20 @@ def _save_annotation(
         return False
 
 
-def _load_v510_queue() -> pd.DataFrame:
-    """Carga mensajes evaluados por Art. 510 pendientes de validación humana."""
-    skipped = st.session_state.get("v510_skipped", set())
-
+def _load_v510_pending_base() -> pd.DataFrame:
+    """Carga base de pendientes de validación humana para Art. 510."""
     try:
         with get_conn() as conn:
             df = pd.read_sql("""
                 SELECT ea.message_uuid,
                        ea.label_source,
+                       ea.es_potencial_delito,
                        ea.apartado_510,
                        ea.grupo_protegido,
                        ea.conducta_detectada,
                        ea.justificacion,
                        ea.confianza,
+                       ea.evaluacion_date,
                        pm.platform,
                        pm.content_original,
                        pm.source_media,
@@ -4663,33 +4663,44 @@ def _load_v510_queue() -> pd.DataFrame:
                         ELSE 3
                     END,
                     ea.evaluacion_date DESC
-                LIMIT 200
             """, conn)
     except Exception:
         return pd.DataFrame()
 
+    return df
+
+
+def _load_v510_queue() -> pd.DataFrame:
+    """Carga pendientes de la última ejecución Art. 510 para validación humana."""
+    skipped = st.session_state.get("v510_skipped", set())
+    df = _load_v510_pending_base()
+    if df.empty:
+        return df
+
+    df_last, _ = _art510_split_last_run(df, gap_minutes=20)
+    if df_last.empty:
+        return pd.DataFrame()
+
+    df = df_last
     if skipped and not df.empty:
         keys = df["message_uuid"].astype(str) + "|" + df["label_source"].astype(str)
         df = df[~keys.isin(skipped)]
 
-    return df
+    return df.head(200)
 
 
 def _load_v510_kpis(annotator_id: str) -> dict:
     """KPIs de progreso de validación Art. 510."""
     try:
+        df_pending = _load_v510_pending_base()
+        if df_pending.empty:
+            pendientes = 0
+        else:
+            df_last, _ = _art510_split_last_run(df_pending, gap_minutes=20)
+            pendientes = int(len(df_last))
+
         with get_conn() as conn:
             cur = conn.cursor()
-
-            cur.execute("""
-                SELECT COUNT(*) FROM processed.evaluacion_art510
-                WHERE NOT EXISTS (
-                      SELECT 1 FROM processed.validacion_art510_humana vh
-                      WHERE vh.message_uuid = evaluacion_art510.message_uuid
-                        AND vh.label_source = evaluacion_art510.label_source
-                  )
-            """)
-            pendientes = cur.fetchone()[0]
 
             cur.execute("SELECT COUNT(*) FROM processed.validacion_art510_humana")
             total_validados = cur.fetchone()[0]
