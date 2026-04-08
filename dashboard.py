@@ -24,7 +24,7 @@ import sys
 import unicodedata
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 import plotly.express as px
@@ -4715,6 +4715,10 @@ def _render_validacion_art510(annotator: str):
     k4.metric(f"Por {annotator}", f"{kpis['por_anotador']:,}")
 
     st.divider()
+    summary = load_art510_summary()
+    if summary.get("total_validados", 0) > 0:
+        _render_art510_validacion_humana(summary)
+        st.divider()
 
     # --- Cola ---
     if "v510_skipped" not in st.session_state:
@@ -4723,7 +4727,6 @@ def _render_validacion_art510(annotator: str):
     queue = _load_v510_queue()
 
     if queue.empty:
-        summary = load_art510_summary()
         if summary["total_evaluados"] == 0:
             st.info(
                 "Aún no se ha ejecutado `evaluar_art510.py`. "
@@ -4886,12 +4889,297 @@ def _render_validacion_art510(annotator: str):
         st.rerun()
 
 
+def _vllm_platform_where(platform_key: str) -> str:
+    return "pm.platform = 'youtube'" if platform_key == "youtube" else "pm.platform IN ('x', 'twitter')"
+
+
+def _load_vllm_queue(platform_key: str, clasif_filter: Optional[str] = None) -> pd.DataFrame:
+    try:
+        with get_conn() as conn:
+            clasif_cond = ""
+            params: list = []
+            if clasif_filter:
+                clasif_cond = "AND e.clasificacion_principal = %s"
+                params.append(clasif_filter)
+
+            extra_cols = ", pm.source_media, rm.tweet_id AS video_id" if platform_key == "youtube" else ""
+            extra_join = "LEFT JOIN raw.mensajes rm USING (message_uuid)" if platform_key == "youtube" else ""
+            df = pd.read_sql(
+                f"""
+                SELECT DISTINCT ON (pm.content_original)
+                       pm.message_uuid, pm.content_original, pm.created_at
+                       {extra_cols},
+                       e.clasificacion_principal, e.categoria_odio_pred,
+                       e.intensidad_pred, e.resumen_motivo
+                FROM processed.etiquetas_llm e
+                JOIN processed.mensajes pm USING (message_uuid)
+                {extra_join}
+                WHERE {_vllm_platform_where(platform_key)}
+                  AND pm.message_uuid NOT IN (
+                      SELECT message_uuid FROM processed.validaciones_manuales
+                  )
+                  {clasif_cond}
+                ORDER BY pm.content_original, pm.created_at DESC
+                """,
+                conn,
+                params=params,
+            )
+    except Exception:
+        return pd.DataFrame()
+
+    df = df.sample(frac=1).head(100).reset_index(drop=True)
+    skipped_key = "vllm_yt_skipped" if platform_key == "youtube" else "vllm_x_skipped"
+    skipped = st.session_state.get(skipped_key, set())
+    if skipped and not df.empty:
+        df = df[~df["message_uuid"].astype(str).isin(skipped)]
+    return df
+
+
+def _load_vllm_kpis(platform_key: str, annotator_id: str, clasif_filter: Optional[str] = None) -> dict:
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            clasif_cond = ""
+            params_pending: list = []
+            if clasif_filter:
+                clasif_cond = "AND e.clasificacion_principal = %s"
+                params_pending.append(clasif_filter)
+
+            cur.execute(
+                f"""
+                SELECT COUNT(*) FROM processed.etiquetas_llm e
+                JOIN processed.mensajes pm USING (message_uuid)
+                WHERE {_vllm_platform_where(platform_key)}
+                  AND pm.message_uuid NOT IN (
+                      SELECT message_uuid FROM processed.validaciones_manuales
+                  )
+                  {clasif_cond}
+                """,
+                params_pending,
+            )
+            pendientes = cur.fetchone()[0]
+
+            cur.execute(
+                f"""
+                SELECT COUNT(*) FROM processed.etiquetas_llm e
+                JOIN processed.mensajes pm USING (message_uuid)
+                WHERE {_vllm_platform_where(platform_key)}
+                """
+            )
+            total_etiquetados_llm = cur.fetchone()[0]
+
+            cur.execute(
+                f"""
+                SELECT COUNT(*) FROM processed.validaciones_manuales vm
+                JOIN processed.mensajes pm USING (message_uuid)
+                JOIN processed.etiquetas_llm e USING (message_uuid)
+                WHERE {_vllm_platform_where(platform_key)}
+                """
+            )
+            total_validados = cur.fetchone()[0]
+
+            cur.execute(
+                f"""
+                SELECT COUNT(*) FROM processed.validaciones_manuales vm
+                JOIN processed.mensajes pm USING (message_uuid)
+                JOIN processed.etiquetas_llm e USING (message_uuid)
+                WHERE {_vllm_platform_where(platform_key)}
+                  AND vm.annotation_date = CURRENT_DATE
+                """
+            )
+            validados_hoy = cur.fetchone()[0]
+
+            cur.execute(
+                f"""
+                SELECT COUNT(*) FROM processed.validaciones_manuales vm
+                JOIN processed.mensajes pm USING (message_uuid)
+                JOIN processed.etiquetas_llm e USING (message_uuid)
+                WHERE {_vllm_platform_where(platform_key)}
+                  AND vm.annotator_id = %s
+                """,
+                (annotator_id,),
+            )
+            por_anotador = cur.fetchone()[0]
+            cur.close()
+
+        pct = (total_validados / total_etiquetados_llm * 100) if total_etiquetados_llm else 0
+        return {
+            "total_etiquetados_llm": total_etiquetados_llm,
+            "pendientes": pendientes,
+            "total_validados": total_validados,
+            "validados_hoy": validados_hoy,
+            "por_anotador": por_anotador,
+            "pct_avance": pct,
+        }
+    except Exception:
+        return {"total_etiquetados_llm": 0, "pendientes": 0, "total_validados": 0, "validados_hoy": 0, "por_anotador": 0, "pct_avance": 0}
+
+
+def _save_vllm_validation(
+    message_uuid: str,
+    odio_flag: Optional[bool],
+    categoria_odio: Optional[str],
+    intensidad: Optional[int],
+    humor_flag: bool,
+    annotator_id: str,
+    coincide_con_llm: bool,
+) -> bool:
+    import random
+    from datetime import date
+
+    if odio_flag is True:
+        y_odio_final, y_odio_bin = "Odio", 1
+    elif odio_flag is False:
+        y_odio_final, y_odio_bin = "No Odio", 0
+    else:
+        y_odio_final, y_odio_bin = "Dudoso", None
+
+    y_categoria = categoria_odio if odio_flag else None
+    y_intensidad = intensidad if odio_flag else None
+    split_val = "TRAIN" if random.random() < 0.85 else "TEST"
+
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO processed.validaciones_manuales
+                (message_uuid, odio_flag, categoria_odio, intensidad, humor_flag, annotator_id, annotation_date, coincide_con_llm)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (message_uuid) DO UPDATE SET
+                    odio_flag = EXCLUDED.odio_flag,
+                    categoria_odio = EXCLUDED.categoria_odio,
+                    intensidad = EXCLUDED.intensidad,
+                    humor_flag = EXCLUDED.humor_flag,
+                    annotator_id = EXCLUDED.annotator_id,
+                    annotation_date = EXCLUDED.annotation_date,
+                    coincide_con_llm = EXCLUDED.coincide_con_llm
+                """,
+                (message_uuid, odio_flag, categoria_odio, intensidad, humor_flag, annotator_id, date.today(), coincide_con_llm),
+            )
+            cur.execute(
+                """
+                INSERT INTO processed.gold_dataset
+                (message_uuid, y_odio_final, y_odio_bin, y_categoria_final, y_intensidad_final, label_source, split)
+                VALUES (%s, %s, %s, %s, %s, 'llm_validated', %s)
+                ON CONFLICT (message_uuid) DO UPDATE SET
+                    y_odio_final = EXCLUDED.y_odio_final,
+                    y_odio_bin = EXCLUDED.y_odio_bin,
+                    y_categoria_final = EXCLUDED.y_categoria_final,
+                    y_intensidad_final = EXCLUDED.y_intensidad_final,
+                    label_source = EXCLUDED.label_source
+                """,
+                (message_uuid, y_odio_final, y_odio_bin, y_categoria, y_intensidad, split_val),
+            )
+            cur.close()
+        return True
+    except Exception as e:
+        st.error(f"Error guardando validación LLM: {e}")
+        return False
+
+
+def _render_validacion_llm(platform_key: str, annotator: str) -> None:
+    pending_key = "_vllm_yt_pending_save" if platform_key == "youtube" else "_vllm_x_pending_save"
+    status_key = "_vllm_yt_last_status" if platform_key == "youtube" else "_vllm_x_last_status"
+    skipped_key = "vllm_yt_skipped" if platform_key == "youtube" else "vllm_x_skipped"
+    filter_key = "vllm_yt_clasif_filter" if platform_key == "youtube" else "vllm_x_clasif_filter"
+    form_prefix = "vllm_yt_form" if platform_key == "youtube" else "vllm_x_form"
+    content_key = "contenido_vllm_yt" if platform_key == "youtube" else "contenido_vllm_x"
+    title_suffix = "YT" if platform_key == "youtube" else "X"
+
+    pending = st.session_state.pop(pending_key, None)
+    if pending is not None:
+        ok = _save_vllm_validation(**pending)
+        st.session_state[status_key] = ("ok" if ok else "error", str(pending["message_uuid"])[:8])
+        if ok:
+            st.session_state.get(skipped_key, set()).discard(pending["message_uuid"])
+
+    last_status = st.session_state.pop(status_key, None)
+    if last_status:
+        st.success(f"Validación LLM guardada ({last_status[1]}...)") if last_status[0] == "ok" else st.error("Error al guardar la validación.")
+
+    clasif_sel = st.selectbox("Filtrar por predicción LLM", ["Todos", "ODIO", "NO_ODIO", "DUDOSO"], index=0, key=filter_key)
+    clasif_filter = clasif_sel if clasif_sel != "Todos" else None
+    kpis = _load_vllm_kpis(platform_key, annotator, clasif_filter)
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric(f"Etiquetados LLM ({title_suffix})", f"{kpis['total_etiquetados_llm']:,}")
+    c2.metric("Validados", f"{kpis['total_validados']:,}")
+    c3.metric("Pendientes" + (f" ({clasif_sel})" if clasif_filter else ""), f"{kpis['pendientes']:,}")
+    c4.metric("Validados hoy", f"{kpis['validados_hoy']:,}")
+    c5.metric(f"Por {annotator}", f"{kpis['por_anotador']:,}")
+    st.progress(kpis["pct_avance"] / 100, text=f"Avance validación: {kpis['pct_avance']:.1f}%")
+    st.divider()
+
+    if skipped_key not in st.session_state:
+        st.session_state[skipped_key] = set()
+    queue = _load_vllm_queue(platform_key, clasif_filter)
+    if queue.empty:
+        st.success("Todos los mensajes con etiqueta LLM han sido validados.") if kpis["pendientes"] == 0 and kpis["total_etiquetados_llm"] > 0 else st.info("No hay mensajes pendientes con el filtro seleccionado.")
+        if st.button("Limpiar saltos y recargar", key=f"{form_prefix}_clear"):
+            st.session_state[skipped_key] = set()
+            st.rerun()
+        return
+
+    msg = queue.iloc[0]
+    msg_uuid = str(msg["message_uuid"])
+    st.subheader(f"Mensaje a validar ({queue.shape[0]} en cola)")
+
+    col_msg, col_llm = st.columns([3, 2])
+    with col_msg:
+        st.markdown("**Texto del mensaje:**")
+        st.text_area(content_key, value=str(msg["content_original"]), height=140, disabled=True, label_visibility="collapsed")
+    with col_llm:
+        llm_clasif = msg.get("clasificacion_principal") or "—"
+        llm_cat_raw = msg.get("categoria_odio_pred") or ""
+        llm_int = msg.get("intensidad_pred") or "—"
+        st.markdown(f"**Clasificación:** {llm_clasif}")
+        st.markdown(f"**Categoría:** {CATEGORIAS_LABELS.get(llm_cat_raw, llm_cat_raw) if llm_cat_raw else '—'}")
+        st.markdown(f"**Intensidad:** {llm_int}")
+        if msg.get("resumen_motivo"):
+            st.markdown(f"**Motivo:** _{msg['resumen_motivo']}_")
+
+    form_seq = st.session_state.get(f"_{form_prefix}_seq", 0)
+    fk = f"{form_prefix}_{form_seq}"
+    with st.form(key=fk, clear_on_submit=False):
+        odio_choice = st.radio("¿Es discurso de odio?", ["Odio", "No Odio", "Dudoso"], horizontal=True)
+        categoria = st.selectbox("Categoría de odio", options=list(CATEGORIAS_LABELS.keys()), format_func=lambda x: CATEGORIAS_LABELS.get(x, x))
+        intensidad = st.select_slider("Intensidad", options=[1, 2, 3], value=2)
+        humor = st.checkbox("¿Contiene humor / sarcasmo?")
+        b1, b2 = st.columns(2)
+        submitted = b1.form_submit_button("Guardar y siguiente", type="primary", use_container_width=True)
+        skipped = b2.form_submit_button("Saltar", use_container_width=True)
+
+    if submitted:
+        es_odio = odio_choice == "Odio"
+        odio_flag = True if odio_choice == "Odio" else (False if odio_choice == "No Odio" else None)
+        odio_map = {"Odio": "ODIO", "No Odio": "NO_ODIO", "Dudoso": "DUDOSO"}
+        coincide = odio_map.get(odio_choice) == llm_clasif and (not es_odio or categoria == llm_cat_raw) and (not es_odio or str(intensidad) == str(llm_int))
+        st.session_state[pending_key] = {
+            "message_uuid": msg_uuid,
+            "odio_flag": odio_flag,
+            "categoria_odio": categoria if es_odio else None,
+            "intensidad": intensidad if es_odio else None,
+            "humor_flag": humor if es_odio else False,
+            "annotator_id": annotator,
+            "coincide_con_llm": coincide,
+        }
+        st.session_state[f"_{form_prefix}_seq"] = form_seq + 1
+        st.rerun()
+
+    if skipped:
+        st.session_state.setdefault(skipped_key, set()).add(msg_uuid)
+        st.session_state[f"_{form_prefix}_seq"] = form_seq + 1
+        st.rerun()
+
+
 def render_anotacion():
-    """Sección de anotación humana: YouTube + validación Art. 510."""
+    """Sección de anotación humana: YouTube, Art. 510 y validación LLM (YT + X)."""
     st.title("Anotación y validación")
     st.markdown(
-        "Validación humana de mensajes: anotación de odio en YouTube "
-        "y validación de potenciales delitos Art. 510 (X + YouTube)."
+        "Validación humana de mensajes: anotación de odio en YouTube, "
+        "validación de potenciales delitos Art. 510 (X + YouTube) "
+        "y validación de calidad del etiquetado LLM en YouTube y en X."
     )
 
     # --- Identificación del anotador (compartido entre tabs) ---
@@ -4909,9 +5197,11 @@ def render_anotacion():
         return
 
     # --- Tabs ---
-    tab_yt, tab_510 = st.tabs([
+    tab_yt, tab_510, tab_vllm_yt, tab_vllm_x = st.tabs([
         "Anotación odio YouTube",
         "Validación Art. 510 (X + YouTube)",
+        "Validación etiquetado LLM (YT)",
+        "Validación Etiquetado LLM X",
     ])
 
     with tab_yt:
@@ -4919,6 +5209,12 @@ def render_anotacion():
 
     with tab_510:
         _render_validacion_art510(annotator.strip())
+
+    with tab_vllm_yt:
+        _render_validacion_llm("youtube", annotator.strip())
+
+    with tab_vllm_x:
+        _render_validacion_llm("x", annotator.strip())
 
 
 # ============================================================
