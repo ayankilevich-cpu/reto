@@ -4630,7 +4630,7 @@ def _save_annotation(
 
 
 def _load_v510_queue() -> pd.DataFrame:
-    """Carga mensajes con potencial delito Art. 510 pendientes de validación humana."""
+    """Carga mensajes evaluados por Art. 510 pendientes de validación humana."""
     skipped = st.session_state.get("v510_skipped", set())
 
     try:
@@ -4650,13 +4650,13 @@ def _load_v510_queue() -> pd.DataFrame:
                 FROM processed.evaluacion_art510 ea
                 JOIN processed.mensajes pm USING (message_uuid)
                 LEFT JOIN raw.mensajes rm USING (message_uuid)
-                WHERE ea.es_potencial_delito = TRUE
-                  AND NOT EXISTS (
+                WHERE NOT EXISTS (
                       SELECT 1 FROM processed.validacion_art510_humana vh
                       WHERE vh.message_uuid = ea.message_uuid
                         AND vh.label_source = ea.label_source
                   )
                 ORDER BY
+                    CASE WHEN ea.es_potencial_delito = TRUE THEN 1 ELSE 2 END,
                     CASE ea.confianza
                         WHEN 'alta' THEN 1
                         WHEN 'media' THEN 2
@@ -4683,8 +4683,7 @@ def _load_v510_kpis(annotator_id: str) -> dict:
 
             cur.execute("""
                 SELECT COUNT(*) FROM processed.evaluacion_art510
-                WHERE es_potencial_delito = TRUE
-                  AND NOT EXISTS (
+                WHERE NOT EXISTS (
                       SELECT 1 FROM processed.validacion_art510_humana vh
                       WHERE vh.message_uuid = evaluacion_art510.message_uuid
                         AND vh.label_source = evaluacion_art510.label_source
