@@ -3464,6 +3464,103 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
             f"Desmarca el filtro para ver todos."
         )
 
+    # ── Métricas de validación humana (histórico) ──
+    if validated > 0:
+        st.markdown("---")
+        st.markdown("### Métricas de validación humana")
+        st.caption("Resumen histórico de decisiones humanas sobre mensajes evaluados por Art. 510.")
+
+        confirmados = summary.get("total_confirmados", 0)
+        rechazados = summary.get("total_rechazados", 0)
+        precision_llm = (confirmados / validated * 100) if validated else 0.0
+
+        hv1, hv2, hv3, hv4 = st.columns(4)
+        hv1.metric("Revisados por humano", f"{validated:,}")
+        hv2.metric("Confirmados como delito", f"{confirmados:,}")
+        hv3.metric("Rechazados", f"{rechazados:,}")
+        hv4.metric("Precisión del LLM", f"{precision_llm:.1f}%")
+
+        df_vh = load_art510_validaciones_humanas()
+        if not df_vh.empty:
+            dec_map = {"confirmado": "Confirmado", "rechazado": "Rechazado", "corregido": "Corregido"}
+            conf_order = ["alta", "media", "baja", "sin dato"]
+            conf_colors = {
+                "alta": COLORS["danger"],
+                "media": COLORS["warning"],
+                "baja": COLORS["muted"],
+                "sin dato": "#94a3b8",
+            }
+
+            c_h1, c_h2 = st.columns(2)
+
+            with c_h1:
+                dec_counts = df_vh["validacion_humana"].fillna("sin dato").value_counts().reset_index()
+                dec_counts.columns = ["decision_raw", "Cantidad"]
+                dec_counts["Decisión"] = dec_counts["decision_raw"].map(lambda x: dec_map.get(str(x), str(x).title()))
+                fig_dec = px.bar(
+                    dec_counts,
+                    x="Decisión",
+                    y="Cantidad",
+                    title="Decisiones de validación humana",
+                    color="Decisión",
+                    color_discrete_map={
+                        "Confirmado": COLORS["danger"],
+                        "Rechazado": COLORS["muted"],
+                        "Corregido": COLORS["warning"],
+                        "Sin Dato": "#94a3b8",
+                    },
+                )
+                fig_dec.update_layout(height=340, showlegend=False)
+                st.plotly_chart(fig_dec, use_container_width=True, key="art510_hm_decisiones")
+
+            with c_h2:
+                conf_df = df_vh.copy()
+                conf_df["Confianza LLM"] = conf_df["llm_confianza"].fillna("sin dato").astype(str).str.lower()
+                conf_df["Confianza LLM"] = conf_df["Confianza LLM"].where(
+                    conf_df["Confianza LLM"].isin(["alta", "media", "baja"]), "sin dato"
+                )
+                conf_counts = (
+                    conf_df["Confianza LLM"]
+                    .value_counts()
+                    .reindex(conf_order, fill_value=0)
+                    .reset_index()
+                )
+                conf_counts.columns = ["Confianza LLM", "Cantidad"]
+                fig_conf_vh = px.bar(
+                    conf_counts,
+                    x="Confianza LLM",
+                    y="Cantidad",
+                    title="Confianza del LLM en mensajes validados por humano",
+                    color="Confianza LLM",
+                    color_discrete_map=conf_colors,
+                )
+                fig_conf_vh.update_layout(height=340, showlegend=False)
+                st.plotly_chart(fig_conf_vh, use_container_width=True, key="art510_hm_confianza")
+
+            df_ap_h = df_vh[df_vh["validacion_humana"].isin(["confirmado", "corregido"])].copy()
+            df_ap_h = df_ap_h[df_ap_h["apartado_510_final"].notna() & (df_ap_h["apartado_510_final"].astype(str) != "")]
+            if not df_ap_h.empty:
+                df_ap_h["Apartado (humano)"] = df_ap_h["apartado_510_final"].map(
+                    lambda x: APARTADO_LABELS.get(x, x) if pd.notna(x) else "—"
+                )
+                ap_h_counts = df_ap_h["Apartado (humano)"].value_counts().reset_index()
+                ap_h_counts.columns = ["Apartado (humano)", "Cantidad"]
+                fig_ap_h = px.pie(
+                    ap_h_counts,
+                    names="Apartado (humano)",
+                    values="Cantidad",
+                    hole=0.4,
+                    title="Distribución de apartados confirmados/corregidos (humano)",
+                    color="Apartado (humano)",
+                    color_discrete_map={
+                        APARTADO_LABELS["1a"]: ART510_COLORS["1a"],
+                        APARTADO_LABELS["1b"]: ART510_COLORS["1b"],
+                        APARTADO_LABELS["1c"]: ART510_COLORS["1c"],
+                    },
+                )
+                fig_ap_h.update_layout(height=380)
+                st.plotly_chart(fig_ap_h, use_container_width=True, key="art510_hm_apartado")
+
     # ── Gráficos ──
     st.markdown("---")
     st.markdown("### Distribución por apartado y grupo protegido")
