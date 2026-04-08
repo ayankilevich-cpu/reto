@@ -2542,9 +2542,9 @@ ART510_COLORS = {
 
 _ART510_SYSTEM = (
     "Eres un analista jurídico especializado en delitos de odio del Código "
-    "Penal español. Tu tarea es evaluar si un mensaje de redes sociales "
-    "constituye potencialmente un delito conforme al artículo 510, apartado 1 "
-    "del Código Penal. Devuelves SOLO JSON válido, sin texto extra."
+    "Penal español. Evalúas exclusivamente el Art. 510.1 (apartados 1a, 1b, 1c) "
+    "y debes minimizar falsos positivos manteniendo sensibilidad jurídica. "
+    "Devuelves SOLO JSON válido, sin texto extra."
 )
 
 _ART510_USER_TMPL = """Analiza el siguiente mensaje y determina si podría constituir un delito según el artículo 510.1 del Código Penal español.
@@ -2559,14 +2559,30 @@ c) Negar, trivializar gravemente o enaltecer los delitos de genocidio, de lesa h
 
 GRUPOS PROTEGIDOS (Art. 510): raza, antisemitismo, antigitanismo, ideología, religión, creencias, situación familiar, etnia, nación, origen nacional, sexo, orientación sexual, identidad sexual, género, aporofobia, enfermedad, discapacidad.
 
-IMPORTANTE: NO evaluar bajo el apartado 2 del Art. 510 (lesiones a la dignidad por humillación, menosprecio o descrédito). Solo el apartado 1.
+IMPORTANTE:
+- NO evaluar bajo el apartado 2 del Art. 510 (humillación, menosprecio, descrédito). Solo apartado 1.
+- No marques delito si solo hay insulto genérico, tono agresivo o crítica política/social sin grupo protegido y sin conducta típica.
+- Para marcar delito debe existir vínculo claro con grupo protegido + conducta típica 1a/1b/1c.
+
+CRITERIOS DE DECISIÓN (aplícalos en este orden):
+1) ¿Hay GRUPO PROTEGIDO identificable? Si no, es_potencial_delito=false.
+2) ¿Hay CONDUCTA TÍPICA?
+   - 1a: incitación/promoción/fomento (directa o indirecta) a odio, hostilidad, discriminación o violencia.
+   - 1b: creación/posesión/distribución/difusión/acceso a material idóneo para incitar.
+   - 1c: negación/trivialización grave/enaltecimiento de genocidio o de sus autores, favoreciendo clima de odio.
+3) Si hay dudas razonables pero indicios jurídicos consistentes, usa confianza="media" o "baja" según corresponda.
+
+CASOS QUE NO DEBEN MARCARSE COMO DELITO (salvo evidencia adicional):
+- Insulto o descalificación individual sin referencia a grupo protegido.
+- Crítica política/ideológica abstracta sin llamada a discriminar/hostigar/violentar.
+- Lenguaje ofensivo no orientado a grupo protegido ni a conductas 1a/1b/1c.
 
 Devuelve SOLO un JSON válido con EXACTAMENTE estas claves:
 - es_potencial_delito: true o false
 - apartado_510: "1a", "1b" o "1c" (vacío si no es delito)
 - grupo_protegido: el grupo protegido específico afectado (vacío si no es delito)
 - conducta_detectada: descripción breve de la conducta tipificada (vacío si no es delito)
-- justificacion: 1-2 frases breves explicando tu razonamiento
+- justificacion: 1-2 frases con referencia explícita a grupo protegido + conducta típica o motivo de descarte
 - confianza: "alta", "media" o "baja"
 
 MENSAJE:
