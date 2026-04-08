@@ -19,6 +19,7 @@ Uso:
 from __future__ import annotations
 
 import base64
+import html
 import json
 import sys
 import unicodedata
@@ -2989,6 +2990,39 @@ def load_art510_summary() -> dict:
 
 
 @st.cache_data(ttl=300)
+def load_art510_validaciones_humanas() -> pd.DataFrame:
+    """Carga validaciones humanas de Art. 510 cruzadas con evaluación LLM."""
+    with get_conn() as conn:
+        df = pd.read_sql(
+            """
+            SELECT
+                vh.message_uuid,
+                vh.validacion_humana,
+                vh.apartado_510_final,
+                vh.grupo_protegido_final,
+                vh.conducta_final,
+                vh.comentario,
+                vh.annotator_id,
+                vh.annotation_date,
+                ea.apartado_510 AS llm_apartado,
+                ea.grupo_protegido AS llm_grupo,
+                ea.confianza AS llm_confianza,
+                ea.justificacion AS llm_justificacion,
+                pm.content_original
+            FROM processed.validacion_art510_humana vh
+            LEFT JOIN processed.evaluacion_art510 ea
+              ON ea.message_uuid = vh.message_uuid
+             AND ea.label_source = vh.label_source
+            LEFT JOIN processed.mensajes pm
+              ON pm.message_uuid = vh.message_uuid
+            ORDER BY vh.annotation_date DESC
+            """,
+            conn,
+        )
+    return df
+
+
+@st.cache_data(ttl=300)
 def load_art510_candidates(
     platforms: Optional[Tuple] = None,
     label_sources: Optional[Tuple] = None,
@@ -4907,15 +4941,56 @@ def _render_validacion_art510(annotator: str):
         st.rerun()
 
 
+def _art510_escape(s) -> str:
+    return html.escape("" if s is None else str(s))
+
+
+def _render_art510_validacion_hscroll(cards_inner_html: str) -> None:
+    components.html(
+        f"""
+        <style>
+        .art510-hscroll-wrap {{
+            overflow-x: auto; overflow-y: hidden; width: 100%;
+            border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;
+            padding: 10px;
+        }}
+        .art510-hscroll-inner {{ display: inline-flex; gap: 12px; min-width: max-content; }}
+        .art510-card {{
+            width: 360px; max-height: 480px; overflow-y: auto;
+            border: 1px solid #d1d5db; border-radius: 10px; background: #f8fafc;
+            padding: 10px; box-sizing: border-box; flex: 0 0 auto;
+        }}
+        .art510-card blockquote {{
+            margin: 0 0 8px 0; padding: 8px 10px; border-left: 4px solid #9ca3af;
+            background: #ffffff; border-radius: 8px; font-size: 13px;
+            line-height: 1.35; max-height: 120px; overflow-y: auto;
+            white-space: pre-wrap;
+        }}
+        .art510-card .meta {{ margin: 4px 0; font-size: 12px; }}
+        .art510-card details {{ margin-top: 8px; font-size: 11px; color: #4a5568; }}
+        .art510-badge {{
+            display:inline-block; font-size:11px; font-weight:700; padding:2px 8px;
+            border-radius:999px; background:#e2e8f0; color:#1f2937; margin-bottom:6px;
+        }}
+        </style>
+        <div class="art510-hscroll-wrap"><div class="art510-hscroll-inner">
+        {cards_inner_html}
+        </div></div>
+        """,
+        height=540,
+        scrolling=False,
+    )
+
+
 def _render_art510_validacion_humana(summary: dict):
-    """Resumen visual de validaciones humanas Art. 510."""
-    total_val = int(summary.get("total_validados", 0) or 0)
-    if total_val <= 0:
+    """Sub-sección: resultado de validaciones humanas Art. 510."""
+    total_val = summary.get("total_validados", 0)
+    if total_val == 0:
         return
 
     st.markdown("### Validación humana")
-    confirmados = int(summary.get("total_confirmados", 0) or 0)
-    rechazados = int(summary.get("total_rechazados", 0) or 0)
+    confirmados = summary.get("total_confirmados", 0)
+    rechazados = summary.get("total_rechazados", 0)
     tasa_precision = (confirmados / total_val * 100) if total_val else 0
 
     v1, v2, v3, v4 = st.columns(4)
@@ -4924,49 +4999,71 @@ def _render_art510_validacion_humana(summary: dict):
     v3.metric("Rechazados", f"{rechazados}")
     v4.metric("Precisión del LLM", f"{tasa_precision:.0f}%")
 
-    try:
-        with get_conn() as conn:
-            df_vh = pd.read_sql(
-                """
-                SELECT vh.validacion_humana, vh.apartado_510_final
-                FROM processed.validacion_art510_humana vh
-                ORDER BY vh.annotation_date DESC
-                """,
-                conn,
-            )
-    except Exception:
-        df_vh = pd.DataFrame()
-
+    df_vh = load_art510_validaciones_humanas()
     if df_vh.empty:
         return
 
-    c1, c2 = st.columns(2)
-    with c1:
-        vc = df_vh["validacion_humana"].fillna("sin_dato").value_counts().reset_index()
-        vc.columns = ["Decisión", "Cantidad"]
-        vc["Decisión"] = vc["Decisión"].map(
-            {"confirmado": "Confirmado", "rechazado": "Rechazado", "corregido": "Corregido"}
-        ).fillna("Sin dato")
-        fig_d = px.pie(
-            vc,
-            names="Decisión",
-            values="Cantidad",
-            title="Distribución de decisiones humanas",
-            hole=0.35,
-        )
-        fig_d.update_layout(height=330)
-        st.plotly_chart(fig_d, use_container_width=True, key="art510_vh_decisiones_root")
+    st.markdown("---")
+    tab_conf, tab_rech, tab_all = st.tabs([
+        f"Confirmados ({confirmados})",
+        f"Rechazados ({rechazados})",
+        "Todos",
+    ])
 
-    with c2:
-        df_ap = df_vh[df_vh["apartado_510_final"].notna() & (df_vh["apartado_510_final"].astype(str) != "")]
-        if df_ap.empty:
-            st.info("Sin apartado humano registrado todavía.")
+    with tab_conf:
+        df_c = df_vh[df_vh["validacion_humana"] == "confirmado"]
+        if df_c.empty:
+            st.info("No hay mensajes confirmados como delito.")
         else:
-            ap = df_ap["apartado_510_final"].map(lambda x: APARTADO_LABELS.get(x, x)).value_counts().reset_index()
-            ap.columns = ["Apartado", "Cantidad"]
-            fig_ap = px.bar(ap, x="Apartado", y="Cantidad", title="Apartado Art. 510.1 (decisión humana)")
-            fig_ap.update_layout(height=330, showlegend=False)
-            st.plotly_chart(fig_ap, use_container_width=True, key="art510_vh_apartado_root")
+            st.caption("Desplazá horizontalmente para ver todas las tarjetas.")
+            parts_conf: List[str] = []
+            for _, r in df_c.iterrows():
+                parts_conf.append(
+                    "<div class=\"art510-card\">"
+                    f"<blockquote>{_art510_escape(r.get('content_original'))}</blockquote>"
+                    f"<div class=\"meta\"><b>Apartado:</b> {_art510_escape(r.get('apartado_510_final')) or '—'}</div>"
+                    f"<div class=\"meta\"><b>Grupo protegido:</b> {_art510_escape(r.get('grupo_protegido_final')) or '—'}</div>"
+                    f"<div class=\"meta\"><b>Revisor:</b> {_art510_escape(r.get('annotator_id')) or '—'}</div>"
+                    "</div>"
+                )
+            _render_art510_validacion_hscroll("".join(parts_conf))
+
+    with tab_rech:
+        df_r = df_vh[df_vh["validacion_humana"] == "rechazado"]
+        if df_r.empty:
+            st.info("No hay mensajes rechazados.")
+        else:
+            st.caption("Desplazá horizontalmente para ver todas las tarjetas.")
+            parts_rech: List[str] = []
+            for _, r in df_r.iterrows():
+                parts_rech.append(
+                    "<div class=\"art510-card\">"
+                    f"<blockquote>{_art510_escape(r.get('content_original'))}</blockquote>"
+                    f"<div class=\"meta\"><b>Confianza LLM:</b> {_art510_escape(r.get('llm_confianza')) or '—'}</div>"
+                    f"<div class=\"meta\"><b>Grupo (LLM):</b> {_art510_escape(r.get('llm_grupo')) or '—'}</div>"
+                    f"<div class=\"meta\"><b>Revisor:</b> {_art510_escape(r.get('annotator_id')) or '—'}</div>"
+                    "</div>"
+                )
+            _render_art510_validacion_hscroll("".join(parts_rech))
+
+    with tab_all:
+        st.caption("Vista completa: desplazá horizontalmente.")
+        _dec_badge = {"confirmado": "Confirmado", "rechazado": "Rechazado", "corregido": "Corregido"}
+        parts_all: List[str] = []
+        for _, r in df_vh.iterrows():
+            vh = str(r.get("validacion_humana") or "")
+            badge = _dec_badge.get(vh, _art510_escape(vh) or "—")
+            parts_all.append(
+                "<div class=\"art510-card\">"
+                f"<span class=\"art510-badge\">{_art510_escape(badge)}</span>"
+                f"<blockquote>{_art510_escape(r.get('content_original'))}</blockquote>"
+                f"<div class=\"meta\"><b>Apartado (humano):</b> {_art510_escape(r.get('apartado_510_final')) or '—'}</div>"
+                f"<div class=\"meta\"><b>Grupo (humano):</b> {_art510_escape(r.get('grupo_protegido_final')) or '—'}</div>"
+                f"<div class=\"meta\"><b>Confianza LLM:</b> {_art510_escape(r.get('llm_confianza')) or '—'}</div>"
+                f"<div class=\"meta\"><b>Revisor:</b> {_art510_escape(r.get('annotator_id')) or '—'}</div>"
+                "</div>"
+            )
+        _render_art510_validacion_hscroll("".join(parts_all))
 
 
 def _vllm_platform_where(platform_key: str) -> str:
