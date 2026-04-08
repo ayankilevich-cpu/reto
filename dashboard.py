@@ -95,6 +95,106 @@ PLATFORM_DISPLAY = {
     "youtube": "YouTube",
 }
 
+# ============================================================
+# AUTH — roles y acceso
+# ============================================================
+_ALL_SECTIONS = [
+    "Proyecto ReTo",
+    "Panel general",
+    "Categorías de odio",
+    "Ranking de medios",
+    "Análisis contextual",
+    "Comparativa modelos",
+    "Calidad LLM",
+    "Términos frecuentes",
+    "Dataset Gold",
+    "Análisis Art. 510",
+    "Anotación y validación",
+    "Delitos de odio (oficial)",
+]
+
+_RESTRICTED_SECTIONS: Dict[str, set] = {
+    "admin": set(),
+    "editor": {"Comparativa modelos", "Calidad LLM"},
+    "viewer": {"Comparativa modelos", "Calidad LLM", "Anotación y validación"},
+}
+
+_ROLE_DISPLAY = {"admin": "Administrador", "editor": "Editor", "viewer": "Visualización"}
+
+_FALLBACK_USERS: Dict[str, Dict[str, str]] = {
+    "Admin": {"password": "2026", "role": "admin"},
+    "Reto": {"password": "2026", "role": "editor"},
+    "usuario1": {"password": "2026", "role": "viewer"},
+}
+
+
+def _load_users() -> Dict[str, Dict[str, str]]:
+    """Lee credenciales de st.secrets['users'], con fallback hardcoded."""
+    try:
+        users_section = st.secrets["users"]
+        return {
+            user: {"password": str(data["password"]), "role": str(data["role"])}
+            for user, data in users_section.items()
+        }
+    except Exception:
+        return _FALLBACK_USERS
+
+
+def _check_auth() -> bool:
+    """Retorna True si hay sesión activa con un rol válido."""
+    return st.session_state.get("user_role") in _RESTRICTED_SECTIONS
+
+
+def _render_login():
+    """Pantalla de login."""
+    st.markdown(
+        "<h1 style='text-align:center;'>🛡️ ReTo — Dashboard</h1>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='text-align:center;'>Red de Tolerancia contra los delitos de odio</p>",
+        unsafe_allow_html=True,
+    )
+
+    logo_path = Path(__file__).parent / "logo_reto.png"
+    if logo_path.exists():
+        col_l, col_c, col_r = st.columns([1, 1, 1])
+        with col_c:
+            st.image(str(logo_path), width=200)
+
+    st.markdown("---")
+    users = _load_users()
+
+    _, col_login, _ = st.columns([1, 1, 1])
+    with col_login:
+        with st.form("login_form"):
+            username = st.text_input("Usuario", placeholder="Ingresá tu usuario")
+            password = st.text_input(
+                "Contraseña", type="password", placeholder="Ingresá tu contraseña"
+            )
+            submitted = st.form_submit_button(
+                "Ingresar", type="primary", use_container_width=True
+            )
+
+        if submitted:
+            if not username or not password:
+                st.error("Completá usuario y contraseña.")
+                return
+
+            user_data = users.get(username)
+            if user_data and user_data["password"] == password:
+                st.session_state["user_role"] = user_data["role"]
+                st.session_state["user_name"] = username
+                st.rerun()
+            else:
+                st.error("Usuario o contraseña incorrectos.")
+
+
+def _get_sections_for_role(role: str) -> List[str]:
+    """Retorna las secciones visibles para un rol."""
+    restricted = _RESTRICTED_SECTIONS.get(role, set())
+    return [s for s in _ALL_SECTIONS if s not in restricted]
+
 
 def platform_label(val: str) -> str:
     """Convierte el valor interno de plataforma a su nombre visible."""
@@ -664,32 +764,27 @@ def _filter_counter_terminos_neutros(counter: Counter, exclude: frozenset) -> Co
 # SIDEBAR
 # ============================================================
 def render_sidebar():
+    role = st.session_state.get("user_role", "admin")
+    user_name = st.session_state.get("user_name", "")
+
     logo_path = Path(__file__).parent / "logo_reto.png"
     if logo_path.exists():
         st.sidebar.image(str(logo_path), width=180)
     else:
         st.sidebar.title("ReTo")
     st.sidebar.caption("Red de Tolerancia contra los delitos de odio")
+
+    st.sidebar.markdown(f"**{user_name}** · {_ROLE_DISPLAY.get(role, role)}")
+
+    def _do_logout():
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+
+    st.sidebar.button("Cerrar sesión", key="logout_btn", on_click=_do_logout)
     st.sidebar.markdown("---")
 
-    section = st.sidebar.radio(
-        "Sección",
-        [
-            "Proyecto ReTo",
-            "Panel general",
-            "Categorías de odio",
-            "Ranking de medios",
-            "Análisis contextual",
-            "Comparativa modelos",
-            "Calidad LLM",
-            "Términos frecuentes",
-            "Dataset Gold",
-            "Análisis Art. 510",
-            "Anotación y validación",
-            "Delitos de odio (oficial)",
-        ],
-        index=0,
-    )
+    sections = _get_sections_for_role(role)
+    section = st.sidebar.radio("Sección", sections, index=0)
 
     st.sidebar.markdown("---")
     st.sidebar.caption("Datos: PostgreSQL (reto_db)")
@@ -5144,6 +5239,10 @@ def render_footer():
 # MAIN
 # ============================================================
 def main():
+    if not _check_auth():
+        _render_login()
+        return
+
     section = render_sidebar()
 
     if section == "Proyecto ReTo":
