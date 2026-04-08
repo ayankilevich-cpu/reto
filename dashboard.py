@@ -30,6 +30,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 
@@ -5238,12 +5239,49 @@ def render_footer():
 # ============================================================
 # MAIN
 # ============================================================
+def _scroll_main_to_top() -> None:
+    """Scroll al inicio del área principal al cambiar de sección."""
+    components.html(
+        """
+        <script>
+        (function () {
+            function goTop() {
+                const doc = window.parent.document;
+                const tryScroll = (el) => {
+                    if (!el) return;
+                    el.scrollTop = 0;
+                    if (typeof el.scrollTo === "function") {
+                        el.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                    }
+                };
+                doc.querySelectorAll(
+                    '[data-testid="stAppViewContainer"], '
+                    + 'section[data-testid="stMain"], section.main'
+                ).forEach(tryScroll);
+                tryScroll(doc.documentElement);
+                tryScroll(doc.body);
+                window.parent.scrollTo(0, 0);
+            }
+            goTop();
+            setTimeout(goTop, 50);
+            setTimeout(goTop, 150);
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def main():
     if not _check_auth():
         _render_login()
         return
 
     section = render_sidebar()
+    prev_section = st.session_state.get("_nav_section")
+    section_changed = prev_section != section
+    st.session_state["_nav_section"] = section
 
     if section == "Proyecto ReTo":
         render_proyecto()
@@ -5269,6 +5307,9 @@ def main():
         render_anotacion()
     elif section == "Delitos de odio (oficial)":
         render_delitos()
+
+    if section_changed:
+        _scroll_main_to_top()
 
     render_footer()
 
