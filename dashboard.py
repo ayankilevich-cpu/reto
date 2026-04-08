@@ -1538,9 +1538,7 @@ def render_analisis_contextual():
 
     st.markdown(
         f"Las **líneas horizontales** muestran el **promedio vigente** (**{avg_pct:.1f}%**) "
-        f"y el **umbral vigente** (**{spike_threshold:.1f}%**, 1,5x) calculados sobre semanas cerradas. "
-        "El estado de **alerta de cada semana cerrada** (rojo/azul) se toma del valor "
-        "**congelado en base de datos** (`es_spike`) y **no se recalcula retroactivamente**."
+        f"y el **umbral vigente** (**{spike_threshold:.1f}%**, 1,5x) calculados sobre semanas cerradas."
     )
 
     fig_timeline = go.Figure()
