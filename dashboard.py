@@ -2961,12 +2961,30 @@ def load_art510_summary() -> dict:
             conn.rollback()
             total_validados = 0
 
+        total_confirmados = 0
+        total_rechazados = 0
+        try:
+            cur.execute("""
+                SELECT validacion_humana, COUNT(*)
+                FROM processed.validacion_art510_humana
+                GROUP BY validacion_humana
+            """)
+            for val, cnt in cur.fetchall():
+                if val == "confirmado":
+                    total_confirmados = cnt
+                elif val == "rechazado":
+                    total_rechazados = cnt
+        except Exception:
+            conn.rollback()
+
         cur.close()
 
     return {
         "total_evaluados": total_evaluados,
         "total_delitos": total_delitos,
         "total_validados": total_validados,
+        "total_confirmados": total_confirmados,
+        "total_rechazados": total_rechazados,
     }
 
 
