@@ -21,7 +21,9 @@ from __future__ import annotations
 import base64
 import html
 import json
+import os
 import sys
+import textwrap
 import unicodedata
 from io import BytesIO
 from collections import Counter
@@ -45,6 +47,82 @@ except Exception:  # pragma: no cover
     pio = None
 
 _RETO_ROOT = Path(__file__).resolve().parent
+
+# URL pública del despliegue (contexto en PDFs exportados)
+_APP_PUBLIC_URL = "https://monitoreoreto.streamlit.app"
+
+# Texto de contexto por sección (primer gráfico del PDF si no hay `caption` explícita en fig_items)
+_SECTION_INFORME_CONTEXT: Dict[str, str] = {
+    "panel_general": (
+        "Resumen ejecutivo del monitoreo: volumen de mensajes, candidatos a odio y distribución por plataforma "
+        "según los filtros activos. Las métricas de etiquetado combinan validación humana (Gold) y modelo LLM."
+    ),
+    "categorias_odio": (
+        "Distribución de mensajes clasificados como odio por categoría normativa del proyecto. "
+        "La intensidad (1–3) resume la severidad estimada por el modelo LLM."
+    ),
+    "ranking_medios": (
+        "Ranking de medios por volumen y proporción de mensajes de odio detectados en el periodo filtrado. "
+        "Consolida X y YouTube cuando aplica."
+    ),
+    "analisis_contextual": (
+        "Evolución semanal y desgloses del análisis contextual (categorías, colectivos atacados, temas e intensidad). "
+        "Útil para detectar picos y cambios de narrativa."
+    ),
+    "comparativa_modelos": (
+        "Concordancia entre el clasificador baseline (TF‑IDF + regresión logística) y el etiquetado LLM. "
+        "La matriz resume aciertos/desacuerdos por clase."
+    ),
+    "calidad_llm": (
+        "Calidad del LLM frente a validación humana: accuracy global y por categoría cuando hay anotaciones disponibles."
+    ),
+    "terminos_frecuentes": (
+        "Términos más frecuentes en mensajes candidatos a odio (con filtros de exclusión de términos neutros). "
+        "La nube resume frecuencias relativas."
+    ),
+    "dataset_gold": (
+        "Estado del dataset Gold: balance por plataforma, correcciones humanas y consistencia con predicciones LLM."
+    ),
+    "art510_preview": (
+        "Vista previa de candidatos a delitos de odio (Art. 510 CP): distribución por grupo protegido, fuente e intensidad."
+    ),
+    "art510_full": (
+        "Evaluación Art. 510.1 con resultados del modelo y, si corresponde, validación humana y comparación entre ejecuciones."
+    ),
+    "delitos_oficiales": (
+        "Estadísticas oficiales de delitos de odio (Ministerio del Interior): evolución anual, esclarecimiento y desgloses."
+    ),
+}
+
+_PLOTLY_EXPORT_BOOTSTRAPPED = False
+
+
+def _ensure_plotly_export_bootstrapped() -> None:
+    """
+    Ajusta entorno y Kaleido para exportación estable en contenedores (p. ej. Streamlit Cloud).
+    Idempotente: solo se ejecuta una vez por proceso.
+    """
+    global _PLOTLY_EXPORT_BOOTSTRAPPED
+    if _PLOTLY_EXPORT_BOOTSTRAPPED or pio is None:
+        return
+    try:
+        os.environ.setdefault("KALEIDO_TIMEOUT", "120")
+    except Exception:
+        pass
+    try:
+        scope = getattr(getattr(pio, "kaleido", None), "scope", None)
+        if scope is not None:
+            base_args = tuple(getattr(scope, "chromium_args", None) or ())
+            extra = (
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-software-rasterizer",
+            )
+            scope.chromium_args = tuple(dict.fromkeys(list(base_args) + list(extra)))
+    except Exception:
+        pass
+    _PLOTLY_EXPORT_BOOTSTRAPPED = True
 sys.path.insert(0, str(_RETO_ROOT / "automatizacion_diaria"))
 sys.path.insert(0, str(_RETO_ROOT))
 from db_utils import get_conn
@@ -129,20 +207,52 @@ def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8-sig")
 
 
+def _plotly_figure_copy_for_export(fig) -> Any:
+    """Copia superficial para no mutar la figura mostrada en Streamlit."""
+    try:
+        return go.Figure(fig)
+    except Exception:
+        return fig
+
+
 def plotly_fig_to_png_bytes(fig) -> Tuple[Optional[bytes], Optional[str]]:
-    """Convierte una figura Plotly a PNG en memoria (requiere kaleido)."""
+    """
+    Convierte Plotly → PNG con reintentos progresivos (resolución/scale).
+    Requiere kaleido operativo en el servidor.
+    """
     if fig is None:
         return None, "Figura Plotly vacía."
     if pio is None:
         return None, "No se pudo importar plotly.io."
+
+    export_fig = _plotly_figure_copy_for_export(fig)
     try:
-        png = pio.to_image(fig, format="png", width=1400, height=900, scale=2, engine="kaleido")
-        return png, None
-    except Exception as e:
-        msg = str(e)
-        if "kaleido" in msg.lower():
-            return None, "Exportación Plotly->PNG requiere kaleido."
-        return None, f"No se pudo convertir figura Plotly: {type(e).__name__}."
+        export_fig.update_layout(
+            paper_bgcolor="white",
+            plot_bgcolor="white",
+        )
+    except Exception:
+        pass
+
+    attempts: List[Dict[str, Any]] = [
+        {"format": "png", "width": 1400, "height": 900, "scale": 2, "engine": "kaleido"},
+        {"format": "png", "width": 1280, "height": 820, "scale": 2, "engine": "kaleido"},
+        {"format": "png", "width": 1200, "height": 780, "scale": 1, "engine": "kaleido"},
+        {"format": "png", "width": 1100, "height": 720, "scale": 1, "engine": "kaleido"},
+        {"format": "png", "width": 1000, "height": 650, "scale": 1, "engine": "kaleido"},
+    ]
+    last_err = "Error desconocido al rasterizar Plotly."
+    for kwargs in attempts:
+        try:
+            png = pio.to_image(export_fig, **kwargs)
+            if png:
+                return png, None
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+            low = str(e).lower()
+            if "kaleido" in low and ("not found" in low or "install" in low or "missing" in low):
+                last_err = "Kaleido no está disponible o no pudo iniciarse en el servidor."
+    return None, last_err[:800]
 
 
 def matplotlib_fig_to_png_bytes(fig) -> Tuple[Optional[bytes], Optional[str]]:
@@ -161,15 +271,22 @@ def matplotlib_fig_to_png_bytes(fig) -> Tuple[Optional[bytes], Optional[str]]:
 
 
 def build_section_pdf_bytes(
+    section_key: str,
     section_title: str,
     fig_items: List[Dict[str, Any]],
+    *,
+    data_manifest: Optional[str] = None,
 ) -> Tuple[Optional[bytes], List[str]]:
-    """Construye un PDF de sección con todas las figuras recibidas."""
+    """
+    Construye un PDF tipo informe con gráficos rasterizados y páginas de contexto
+    para que el documento sea legible sin explicación oral.
+    """
     errors: List[str] = []
-    images: List[Tuple[str, bytes]] = []
+    images: List[Tuple[str, bytes, str]] = []
 
     for item in fig_items:
         title = item.get("title", "Gráfico")
+        caption = str(item.get("caption") or "").strip()
         fig = item.get("fig")
         kind = item.get("kind", "plotly")
         if kind == "matplotlib":
@@ -180,31 +297,84 @@ def build_section_pdf_bytes(
             errors.append(f"{title}: {err}")
             continue
         if png:
-            images.append((title, png))
+            images.append((title, png, caption))
 
     if not images:
         return None, errors
 
+    def _add_text_page(title: str, body_lines: List[str]) -> None:
+        fig_t = plt.figure(figsize=(11.69, 8.27))
+        ax_t = fig_t.add_subplot(111)
+        ax_t.axis("off")
+        ax_t.set_title(title, fontsize=16, loc="left", pad=12)
+        y = 0.94
+        for line in body_lines:
+            ax_t.text(0.05, y, line, ha="left", va="top", fontsize=11, wrap=False)
+            y -= 0.045
+            if y < 0.08:
+                break
+        pdf.savefig(fig_t, bbox_inches="tight")
+        plt.close(fig_t)
+
     pdf_buf = BytesIO()
     with PdfPages(pdf_buf) as pdf:
+        # Portada
         fig_cover = plt.figure(figsize=(11.69, 8.27))
         ax_cover = fig_cover.add_subplot(111)
         ax_cover.axis("off")
-        ax_cover.text(0.5, 0.62, "RETO — Exportación de sección", ha="center", va="center", fontsize=20, weight="bold")
-        ax_cover.text(0.5, 0.50, section_title, ha="center", va="center", fontsize=16)
-        ax_cover.text(0.5, 0.40, datetime.now().strftime("%Y-%m-%d %H:%M"), ha="center", va="center", fontsize=11)
+        ax_cover.text(0.5, 0.72, "RETO — Informe de sección", ha="center", va="center", fontsize=22, weight="bold")
+        ax_cover.text(0.5, 0.60, section_title, ha="center", va="center", fontsize=17)
+        ax_cover.text(0.5, 0.50, f"Origen: {_APP_PUBLIC_URL}", ha="center", va="center", fontsize=11)
+        ax_cover.text(0.5, 0.42, f"Generado: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ha="center", va="center", fontsize=11)
+        ax_cover.text(0.5, 0.32, f"Identificador interno: {section_key}", ha="center", va="center", fontsize=9, color="#555555")
         pdf.savefig(fig_cover, bbox_inches="tight")
         plt.close(fig_cover)
 
-        for title, png in images:
+        # Guía de lectura (autointerpretación)
+        guide_lines = textwrap.wrap(
+            "Este documento reproduce los gráficos tal como se generan en el panel de monitoreo del proyecto "
+            "RETO (Red de Tolerancia contra los delitos de odio). Cada página corresponde a una visualización "
+            "de la sección indicada en la portada. Los títulos de figura resumen qué se está midiendo; cuando "
+            "aparece un pie de figura, amplía el contexto operativo (filtros, definiciones o advertencias). "
+            "Los datos tabulares detallados se exportan por separado en formato CSV desde la misma sección de la app.",
+            width=92,
+        )
+        _add_text_page("Cómo leer este informe", guide_lines)
+
+        if data_manifest:
+            man_lines = textwrap.wrap(data_manifest, width=92)
+            _add_text_page("Datos complementarios (CSV)", man_lines)
+
+        for title, png, caption in images:
             fig_page = plt.figure(figsize=(11.69, 8.27))
-            ax = fig_page.add_subplot(111)
-            ax.axis("off")
-            ax.set_title(title, fontsize=13, pad=12)
+            gs = fig_page.add_gridspec(3, 1, height_ratios=[0.07, 0.78, 0.12])
+            ax_top = fig_page.add_subplot(gs[0, 0])
+            ax_top.axis("off")
+            ax_top.set_title(title, fontsize=13, loc="left", pad=6)
+
+            ax_mid = fig_page.add_subplot(gs[1, 0])
+            ax_mid.axis("off")
             arr = mpimg.imread(BytesIO(png), format="png")
-            ax.imshow(arr)
+            ax_mid.imshow(arr)
+
+            ax_bot = fig_page.add_subplot(gs[2, 0])
+            ax_bot.axis("off")
+            if caption:
+                cap_wrapped = textwrap.fill(caption, width=110)
+                ax_bot.text(0.02, 0.95, cap_wrapped, ha="left", va="top", fontsize=9, linespacing=1.25)
+
             pdf.savefig(fig_page, bbox_inches="tight")
             plt.close(fig_page)
+
+        if errors:
+            fig_app = plt.figure(figsize=(11.69, 8.27))
+            ax_app = fig_app.add_subplot(111)
+            ax_app.axis("off")
+            ax_app.set_title("Apéndice — gráficos no incluidos en el PDF", fontsize=14, loc="left", pad=10)
+            body = "\n".join(f"• {e}" for e in errors[:30])
+            ax_app.text(0.04, 0.92, body, ha="left", va="top", fontsize=9, family="monospace")
+            pdf.savefig(fig_app, bbox_inches="tight")
+            plt.close(fig_app)
 
     pdf_buf.seek(0)
     return pdf_buf.read(), errors
@@ -273,6 +443,12 @@ def render_section_exports(
 
     clean_fig_items: List[Dict[str, Any]] = [f for f in fig_items if f.get("fig") is not None]
 
+    ctx_blurb = _SECTION_INFORME_CONTEXT.get(section_key, "").strip()
+    if ctx_blurb and clean_fig_items:
+        first_fig = clean_fig_items[0]
+        if not str(first_fig.get("caption") or "").strip():
+            first_fig["caption"] = ctx_blurb
+
     if not clean_csv_items and not clean_fig_items:
         return
 
@@ -293,26 +469,53 @@ def render_section_exports(
     pdf_bytes: Optional[bytes] = None
     pdf_errors: List[str] = []
 
-    if clean_fig_items:
-        pdf_bytes, pdf_errors = build_section_pdf_bytes(section_title, clean_fig_items)
+    data_manifest: Optional[str] = None
+    if clean_csv_items:
+        names = ", ".join(n for n, _ in clean_csv_items[:18])
+        if len(clean_csv_items) > 18:
+            names += ", …"
+        data_manifest = (
+            "En la app podés descargar CSV con el detalle tabular. Conjuntos disponibles en esta sección: "
+            + names
+            + "."
+        )
 
-    if not pdf_bytes:
+    if clean_fig_items:
+        _ensure_plotly_export_bootstrapped()
+        pdf_bytes, pdf_errors = build_section_pdf_bytes(
+            section_key,
+            section_title,
+            clean_fig_items,
+            data_manifest=data_manifest,
+        )
+    elif clean_csv_items:
+        # Solo secciones sin ningún gráfico exportable: PDF tabular como respaldo.
         pdf_bytes = build_section_tabular_pdf_bytes(section_title, clean_csv_items)
 
     if pdf_bytes:
+        pdf_label = (
+            "Descargar PDF — informe con gráficos"
+            if clean_fig_items
+            else "Descargar PDF — tablas (sin gráficos en esta vista)"
+        )
         st.download_button(
-            label="Descargar PDF — reporte de la sección",
+            label=pdf_label,
             data=pdf_bytes,
-            file_name=f"reto_{section_key}_reporte.pdf",
+            file_name=f"reto_{section_key}_informe.pdf",
             mime="application/pdf",
             key=f"dl_pdf_{section_key}",
             use_container_width=False,
         )
+    elif clean_fig_items:
+        st.warning(
+            "No se pudo generar el PDF con gráficos. Los CSV siguen disponibles arriba. "
+            "Si el problema persiste, probá un reinicio del despliegue en Streamlit Cloud."
+        )
     else:
-        st.info("No se pudo generar el PDF de esta sección.")
+        st.info("No hay PDF disponible para esta vista.")
 
     if pdf_errors:
-        st.caption("Avisos de exportación gráfica (se aplicó fallback tabular): " + " | ".join(pdf_errors[:4]))
+        st.caption("Gráficos omitidos u observaciones: " + " | ".join(pdf_errors[:6]))
 
 
 # ============================================================
