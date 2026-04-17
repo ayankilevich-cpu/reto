@@ -107,6 +107,20 @@ PLATFORM_DISPLAY = {
     "youtube": "YouTube",
 }
 
+_LOGO_FALLBACK_URL = "https://raw.githubusercontent.com/ayankilevich-cpu/reto/main/logo_reto.png"
+
+
+def _resolve_logo_asset() -> Optional[str]:
+    """Resuelve el logo principal del sidebar/login con fallback remoto."""
+    for p in (
+        Path(__file__).parent / "logo_reto.png",
+        Path(__file__).parent / "logos" / "logo_reto.png",
+    ):
+        if p.exists():
+            return str(p)
+    return _LOGO_FALLBACK_URL
+
+
 # ============================================================
 # EXPORT HELPERS (CSV / PDF por sección)
 # ============================================================
@@ -122,7 +136,7 @@ def plotly_fig_to_png_bytes(fig) -> Tuple[Optional[bytes], Optional[str]]:
     if pio is None:
         return None, "No se pudo importar plotly.io."
     try:
-        png = pio.to_image(fig, format="png", width=1400, height=900, scale=2)
+        png = pio.to_image(fig, format="png", width=1400, height=900, scale=2, engine="kaleido")
         return png, None
     except Exception as e:
         msg = str(e)
@@ -196,6 +210,55 @@ def build_section_pdf_bytes(
     return pdf_buf.read(), errors
 
 
+def build_section_tabular_pdf_bytes(
+    section_title: str,
+    csv_items: List[Tuple[str, pd.DataFrame]],
+) -> Optional[bytes]:
+    """Fallback: genera PDF tabular cuando no es posible renderizar gráficos."""
+    valid_items = [(name, df) for name, df in csv_items if isinstance(df, pd.DataFrame) and not df.empty]
+    if not valid_items:
+        return None
+
+    pdf_buf = BytesIO()
+    with PdfPages(pdf_buf) as pdf:
+        fig_cover = plt.figure(figsize=(11.69, 8.27))
+        ax_cover = fig_cover.add_subplot(111)
+        ax_cover.axis("off")
+        ax_cover.text(0.5, 0.62, "RETO — Reporte de sección", ha="center", va="center", fontsize=20, weight="bold")
+        ax_cover.text(0.5, 0.50, section_title, ha="center", va="center", fontsize=16)
+        ax_cover.text(0.5, 0.40, datetime.now().strftime("%Y-%m-%d %H:%M"), ha="center", va="center", fontsize=11)
+        ax_cover.text(0.5, 0.28, "Versión tabular (fallback sin imágenes)", ha="center", va="center", fontsize=10)
+        pdf.savefig(fig_cover, bbox_inches="tight")
+        plt.close(fig_cover)
+
+        for name, df in valid_items:
+            df_page = df.head(28).copy()
+            df_page.columns = [str(c)[:36] for c in df_page.columns]
+            for col in df_page.columns:
+                df_page[col] = df_page[col].astype(str).str.slice(0, 80)
+
+            fig_page = plt.figure(figsize=(11.69, 8.27))
+            ax = fig_page.add_subplot(111)
+            ax.axis("off")
+            ax.set_title(f"{name} (primeras {len(df_page)} filas)", fontsize=12, pad=10)
+
+            table = ax.table(
+                cellText=df_page.values,
+                colLabels=df_page.columns,
+                cellLoc="left",
+                loc="center",
+            )
+            table.auto_set_font_size(False)
+            table.set_fontsize(7)
+            table.scale(1, 1.2)
+
+            pdf.savefig(fig_page, bbox_inches="tight")
+            plt.close(fig_page)
+
+    pdf_buf.seek(0)
+    return pdf_buf.read()
+
+
 def render_section_exports(
     section_key: str,
     section_title: str,
@@ -224,25 +287,32 @@ def render_section_exports(
                 file_name=f"reto_{section_key}_{name}.csv",
                 mime="text/csv",
                 key=f"dl_csv_{section_key}_{idx}",
-                use_container_width=True,
+                use_container_width=False,
             )
+
+    pdf_bytes: Optional[bytes] = None
+    pdf_errors: List[str] = []
 
     if clean_fig_items:
         pdf_bytes, pdf_errors = build_section_pdf_bytes(section_title, clean_fig_items)
-        if pdf_bytes:
-            st.download_button(
-                label="Descargar PDF — gráficos de la sección",
-                data=pdf_bytes,
-                file_name=f"reto_{section_key}_graficos.pdf",
-                mime="application/pdf",
-                key=f"dl_pdf_{section_key}",
-                use_container_width=True,
-            )
-        else:
-            st.info("No se pudo generar el PDF de gráficos para esta sección.")
 
-        if pdf_errors:
-            st.caption("Avisos de exportación PDF: " + " | ".join(pdf_errors[:4]))
+    if not pdf_bytes:
+        pdf_bytes = build_section_tabular_pdf_bytes(section_title, clean_csv_items)
+
+    if pdf_bytes:
+        st.download_button(
+            label="Descargar PDF — reporte de la sección",
+            data=pdf_bytes,
+            file_name=f"reto_{section_key}_reporte.pdf",
+            mime="application/pdf",
+            key=f"dl_pdf_{section_key}",
+            use_container_width=False,
+        )
+    else:
+        st.info("No se pudo generar el PDF de esta sección.")
+
+    if pdf_errors:
+        st.caption("Avisos de exportación gráfica (se aplicó fallback tabular): " + " | ".join(pdf_errors[:4]))
 
 
 # ============================================================
@@ -306,11 +376,11 @@ def _render_login():
         unsafe_allow_html=True,
     )
 
-    logo_path = Path(__file__).parent / "logo_reto.png"
-    if logo_path.exists():
+    logo_path = _resolve_logo_asset()
+    if logo_path:
         col_l, col_c, col_r = st.columns([1, 1, 1])
         with col_c:
-            st.image(str(logo_path), width=200)
+            st.image(logo_path, width=200)
 
     st.markdown("---")
     users = _load_users()
@@ -917,9 +987,9 @@ def render_sidebar():
     role = st.session_state.get("user_role", "admin")
     user_name = st.session_state.get("user_name", "")
 
-    logo_path = Path(__file__).parent / "logo_reto.png"
-    if logo_path.exists():
-        st.sidebar.image(str(logo_path), width=180)
+    logo_path = _resolve_logo_asset()
+    if logo_path:
+        st.sidebar.image(logo_path, width=180)
     else:
         st.sidebar.title("ReTo")
     st.sidebar.caption("Red de Tolerancia contra los delitos de odio")
