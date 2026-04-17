@@ -99,27 +99,21 @@ _PLOTLY_EXPORT_BOOTSTRAPPED = False
 
 def _ensure_plotly_export_bootstrapped() -> None:
     """
-    Ajusta entorno y Kaleido para exportación estable en contenedores (p. ej. Streamlit Cloud).
+    Prepara Kaleido para exportación en servidor (Streamlit Cloud, Docker, etc.).
     Idempotente: solo se ejecuta una vez por proceso.
+
+    Nota: no forzamos `chromium_args` personalizados por defecto; en varios hosts
+    de Streamlit Cloud eso rompe el arranque de Chromium y deja Plotly sin PNG.
     """
     global _PLOTLY_EXPORT_BOOTSTRAPPED
     if _PLOTLY_EXPORT_BOOTSTRAPPED or pio is None:
         return
     try:
-        os.environ.setdefault("KALEIDO_TIMEOUT", "120")
+        os.environ.setdefault("KALEIDO_TIMEOUT", "180")
     except Exception:
         pass
     try:
-        scope = getattr(getattr(pio, "kaleido", None), "scope", None)
-        if scope is not None:
-            base_args = tuple(getattr(scope, "chromium_args", None) or ())
-            extra = (
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-software-rasterizer",
-            )
-            scope.chromium_args = tuple(dict.fromkeys(list(base_args) + list(extra)))
+        import kaleido as _kaleido  # noqa: F401  # asegura binarios importables
     except Exception:
         pass
     _PLOTLY_EXPORT_BOOTSTRAPPED = True
@@ -233,6 +227,11 @@ def plotly_fig_to_png_bytes(fig) -> Tuple[Optional[bytes], Optional[str]]:
         )
     except Exception:
         pass
+    try:
+        if hasattr(pio, "full_figure_for_export"):
+            export_fig = pio.full_figure_for_export(export_fig, warn=False)
+    except Exception:
+        pass
 
     attempts: List[Dict[str, Any]] = [
         {"format": "png", "width": 1400, "height": 900, "scale": 2, "engine": "kaleido"},
@@ -240,6 +239,9 @@ def plotly_fig_to_png_bytes(fig) -> Tuple[Optional[bytes], Optional[str]]:
         {"format": "png", "width": 1200, "height": 780, "scale": 1, "engine": "kaleido"},
         {"format": "png", "width": 1100, "height": 720, "scale": 1, "engine": "kaleido"},
         {"format": "png", "width": 1000, "height": 650, "scale": 1, "engine": "kaleido"},
+        # Sin `engine` explícito (compatibilidad con versiones de Plotly)
+        {"format": "png", "width": 1200, "height": 780, "scale": 1},
+        {"format": "png", "width": 900, "height": 560, "scale": 1},
     ]
     last_err = "Error desconocido al rasterizar Plotly."
     for kwargs in attempts:
@@ -252,6 +254,27 @@ def plotly_fig_to_png_bytes(fig) -> Tuple[Optional[bytes], Optional[str]]:
             low = str(e).lower()
             if "kaleido" in low and ("not found" in low or "install" in low or "missing" in low):
                 last_err = "Kaleido no está disponible o no pudo iniciarse en el servidor."
+
+    try:
+        buf = BytesIO()
+        export_fig.write_image(buf, format="png", width=1200, height=780, scale=1, engine="kaleido")
+        buf.seek(0)
+        png2 = buf.read()
+        if png2:
+            return png2, None
+    except Exception as e:
+        last_err = f"write_image: {type(e).__name__}: {e}"
+
+    try:
+        buf = BytesIO()
+        export_fig.write_image(buf, format="png", width=1000, height=650, scale=1)
+        buf.seek(0)
+        png3 = buf.read()
+        if png3:
+            return png3, None
+    except Exception as e:
+        last_err = f"write_image(sin engine): {type(e).__name__}: {e}"
+
     return None, last_err[:800]
 
 
@@ -507,9 +530,15 @@ def render_section_exports(
             use_container_width=False,
         )
     elif clean_fig_items:
+        detail = ""
+        if pdf_errors:
+            detail = " Detalle técnico: " + " | ".join(pdf_errors[:4])
         st.warning(
-            "No se pudo generar el PDF con gráficos. Los CSV siguen disponibles arriba. "
-            "Si el problema persiste, probá un reinicio del despliegue en Streamlit Cloud."
+            "No se pudo generar el PDF con gráficos (no se pudo rasterizar ninguna figura Plotly/Matplotlib). "
+            "Los CSV siguen disponibles arriba."
+            + detail
+            + " Si ves un error de Kaleido/Chromium, probá redeploy limpio en Streamlit Cloud o "
+            "revisá que `requirements.txt` incluya `kaleido` y una versión estable de `plotly`."
         )
     else:
         st.info("No hay PDF disponible para esta vista.")

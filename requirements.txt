@@ -1,7 +1,7 @@
 streamlit>=1.30
 pandas>=2.0
-plotly>=5.18
-kaleido>=0.2.1
+plotly>=5.22,<6
+kaleido>=0.2.1,<0.3
 psycopg2-binary>=2.9
 python-dotenv>=1.0
 wordcloud>=1.9
