@@ -23,7 +23,9 @@ import html
 import json
 import sys
 import unicodedata
+from io import BytesIO
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -34,6 +36,13 @@ import streamlit as st
 import streamlit.components.v1 as components
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+from matplotlib.backends.backend_pdf import PdfPages
+
+try:
+    import plotly.io as pio
+except Exception:  # pragma: no cover
+    pio = None
 
 _RETO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_RETO_ROOT / "automatizacion_diaria"))
@@ -97,6 +106,144 @@ PLATFORM_DISPLAY = {
     "twitter": "X",
     "youtube": "YouTube",
 }
+
+# ============================================================
+# EXPORT HELPERS (CSV / PDF por sección)
+# ============================================================
+def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    """Serializa un DataFrame a CSV UTF-8 (con BOM para Excel)."""
+    return df.to_csv(index=False).encode("utf-8-sig")
+
+
+def plotly_fig_to_png_bytes(fig) -> Tuple[Optional[bytes], Optional[str]]:
+    """Convierte una figura Plotly a PNG en memoria (requiere kaleido)."""
+    if fig is None:
+        return None, "Figura Plotly vacía."
+    if pio is None:
+        return None, "No se pudo importar plotly.io."
+    try:
+        png = pio.to_image(fig, format="png", width=1400, height=900, scale=2)
+        return png, None
+    except Exception as e:
+        msg = str(e)
+        if "kaleido" in msg.lower():
+            return None, "Exportación Plotly->PNG requiere kaleido."
+        return None, f"No se pudo convertir figura Plotly: {type(e).__name__}."
+
+
+def matplotlib_fig_to_png_bytes(fig) -> Tuple[Optional[bytes], Optional[str]]:
+    """Convierte una figura Matplotlib a PNG en memoria."""
+    if fig is None:
+        return None, "Figura Matplotlib vacía."
+    buf = BytesIO()
+    try:
+        fig.savefig(buf, format="png", dpi=160, bbox_inches="tight")
+        buf.seek(0)
+        return buf.read(), None
+    except Exception as e:
+        return None, f"No se pudo convertir figura Matplotlib: {type(e).__name__}."
+    finally:
+        buf.close()
+
+
+def build_section_pdf_bytes(
+    section_title: str,
+    fig_items: List[Dict[str, Any]],
+) -> Tuple[Optional[bytes], List[str]]:
+    """Construye un PDF de sección con todas las figuras recibidas."""
+    errors: List[str] = []
+    images: List[Tuple[str, bytes]] = []
+
+    for item in fig_items:
+        title = item.get("title", "Gráfico")
+        fig = item.get("fig")
+        kind = item.get("kind", "plotly")
+        if kind == "matplotlib":
+            png, err = matplotlib_fig_to_png_bytes(fig)
+        else:
+            png, err = plotly_fig_to_png_bytes(fig)
+        if err:
+            errors.append(f"{title}: {err}")
+            continue
+        if png:
+            images.append((title, png))
+
+    if not images:
+        return None, errors
+
+    pdf_buf = BytesIO()
+    with PdfPages(pdf_buf) as pdf:
+        fig_cover = plt.figure(figsize=(11.69, 8.27))
+        ax_cover = fig_cover.add_subplot(111)
+        ax_cover.axis("off")
+        ax_cover.text(0.5, 0.62, "RETO — Exportación de sección", ha="center", va="center", fontsize=20, weight="bold")
+        ax_cover.text(0.5, 0.50, section_title, ha="center", va="center", fontsize=16)
+        ax_cover.text(0.5, 0.40, datetime.now().strftime("%Y-%m-%d %H:%M"), ha="center", va="center", fontsize=11)
+        pdf.savefig(fig_cover, bbox_inches="tight")
+        plt.close(fig_cover)
+
+        for title, png in images:
+            fig_page = plt.figure(figsize=(11.69, 8.27))
+            ax = fig_page.add_subplot(111)
+            ax.axis("off")
+            ax.set_title(title, fontsize=13, pad=12)
+            arr = mpimg.imread(BytesIO(png), format="png")
+            ax.imshow(arr)
+            pdf.savefig(fig_page, bbox_inches="tight")
+            plt.close(fig_page)
+
+    pdf_buf.seek(0)
+    return pdf_buf.read(), errors
+
+
+def render_section_exports(
+    section_key: str,
+    section_title: str,
+    csv_items: List[Tuple[str, pd.DataFrame]],
+    fig_items: List[Dict[str, Any]],
+) -> None:
+    """Renderiza botones de descarga CSV y PDF para una sección."""
+    clean_csv_items: List[Tuple[str, pd.DataFrame]] = []
+    for name, df in csv_items:
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            clean_csv_items.append((name, df))
+
+    clean_fig_items: List[Dict[str, Any]] = [f for f in fig_items if f.get("fig") is not None]
+
+    if not clean_csv_items and not clean_fig_items:
+        return
+
+    st.markdown("---")
+    st.markdown("### Descargas")
+
+    if clean_csv_items:
+        for idx, (name, df) in enumerate(clean_csv_items):
+            st.download_button(
+                label=f"Descargar CSV — {name}",
+                data=df_to_csv_bytes(df),
+                file_name=f"reto_{section_key}_{name}.csv",
+                mime="text/csv",
+                key=f"dl_csv_{section_key}_{idx}",
+                use_container_width=True,
+            )
+
+    if clean_fig_items:
+        pdf_bytes, pdf_errors = build_section_pdf_bytes(section_title, clean_fig_items)
+        if pdf_bytes:
+            st.download_button(
+                label="Descargar PDF — gráficos de la sección",
+                data=pdf_bytes,
+                file_name=f"reto_{section_key}_graficos.pdf",
+                mime="application/pdf",
+                key=f"dl_pdf_{section_key}",
+                use_container_width=True,
+            )
+        else:
+            st.info("No se pudo generar el PDF de gráficos para esta sección.")
+
+        if pdf_errors:
+            st.caption("Avisos de exportación PDF: " + " | ".join(pdf_errors[:4]))
+
 
 # ============================================================
 # AUTH — roles y acceso
@@ -999,6 +1146,22 @@ def render_panel_general():
             )
             st.plotly_chart(fig_avg, use_container_width=True)
 
+    render_section_exports(
+        section_key="panel_general",
+        section_title="Panel general",
+        csv_items=[
+            ("datos_combinados", df_comb if "df_comb" in locals() else pd.DataFrame()),
+            ("kpis", pd.DataFrame([kpis]) if "kpis" in locals() else pd.DataFrame()),
+        ],
+        fig_items=[
+            {"title": "Distribución odio/no odio", "fig": fig_pie if "fig_pie" in locals() else None, "kind": "plotly"},
+            {"title": "Distribución por plataforma", "fig": fig_plat if "fig_plat" in locals() else None, "kind": "plotly"},
+            {"title": "Intensidad del odio", "fig": fig_int if "fig_int" in locals() else None, "kind": "plotly"},
+            {"title": "Categorías de odio", "fig": fig_cat if "fig_cat" in locals() else None, "kind": "plotly"},
+            {"title": "Intensidad promedio por categoría", "fig": fig_avg if "fig_avg" in locals() else None, "kind": "plotly"},
+        ],
+    )
+
 
 @st.cache_data(ttl=300)
 def _load_panel_combined(
@@ -1151,6 +1314,20 @@ def render_categorias():
         )
         fig3.update_layout(height=400, xaxis_tickangle=-30)
         st.plotly_chart(fig3, use_container_width=True)
+
+    render_section_exports(
+        section_key="categorias_odio",
+        section_title="Distribución por categoría de odio",
+        csv_items=[
+            ("categorias", df if "df" in locals() else pd.DataFrame()),
+            ("intensidad_categoria", df_int if "df_int" in locals() else pd.DataFrame()),
+        ],
+        fig_items=[
+            {"title": "Mensajes por categoría", "fig": fig if "fig" in locals() else None, "kind": "plotly"},
+            {"title": "Proporción por categoría", "fig": fig2 if "fig2" in locals() else None, "kind": "plotly"},
+            {"title": "Intensidad por categoría", "fig": fig3 if "fig3" in locals() else None, "kind": "plotly"},
+        ],
+    )
 
 
 def _prepare_ranking_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -1449,6 +1626,39 @@ def render_ranking_medios():
     with tab_explore:
         _render_explorar_medio()
 
+    df_vol_exp = df_consol.sort_values("total_mensajes", ascending=False).head(top_n)
+    df_pct_exp = df_consol.sort_values("pct_odio_any", ascending=False).head(top_n)
+    fig_vol_exp = px.bar(
+        df_vol_exp, x="total_mensajes", y="source_media", orientation="h",
+        color="total_mensajes", color_continuous_scale="Blues",
+        labels={"total_mensajes": "Total mensajes", "source_media": ""},
+        title=f"Top {top_n} medios — Volumen de mensajes (consolidado)",
+    )
+    fig_vol_exp.update_layout(height=max(350, top_n * 30), yaxis=dict(autorange="reversed"), showlegend=False)
+
+    fig_pct_exp = px.bar(
+        df_pct_exp, x="pct_odio_any", y="source_media", orientation="h",
+        color="pct_odio_any", color_continuous_scale="Reds",
+        labels={"pct_odio_any": "% Odio", "source_media": ""},
+        title=f"Top {top_n} medios — % Odio (consolidado)",
+    )
+    fig_pct_exp.update_layout(height=max(350, top_n * 30), yaxis=dict(autorange="reversed"), showlegend=False)
+
+    render_section_exports(
+        section_key="ranking_medios",
+        section_title="Ranking de medios",
+        csv_items=[
+            ("consolidado", df_consol if "df_consol" in locals() else pd.DataFrame()),
+            ("x", df_x if "df_x" in locals() else pd.DataFrame()),
+            ("youtube", df_yt if "df_yt" in locals() else pd.DataFrame()),
+            ("todos", df_all if "df_all" in locals() else pd.DataFrame()),
+        ],
+        fig_items=[
+            {"title": "Top medios por volumen (consolidado)", "fig": fig_vol_exp if "fig_vol_exp" in locals() else None, "kind": "plotly"},
+            {"title": "Top medios por porcentaje de odio (consolidado)", "fig": fig_pct_exp if "fig_pct_exp" in locals() else None, "kind": "plotly"},
+        ],
+    )
+
 
 # ============================================================
 # ANÁLISIS CONTEXTUAL SEMANAL
@@ -1731,6 +1941,31 @@ def render_analisis_contextual():
             f"{int(row['dia_pico_odio'])} mensajes de odio ({row['dia_pico_pct']}%)"
         )
 
+    csv_items = [
+        ("semanal_historico", df if "df" in locals() else pd.DataFrame()),
+    ]
+    if "cat_df" in locals() and isinstance(cat_df, pd.DataFrame):
+        csv_items.append(("detalle_categorias", cat_df))
+    if "tgt_df" in locals() and isinstance(tgt_df, pd.DataFrame):
+        csv_items.append(("detalle_targets", tgt_df))
+    if "tema_df" in locals() and isinstance(tema_df, pd.DataFrame):
+        csv_items.append(("detalle_temas", tema_df))
+    if "int_df" in locals() and isinstance(int_df, pd.DataFrame):
+        csv_items.append(("detalle_intensidad", int_df))
+
+    render_section_exports(
+        section_key="analisis_contextual",
+        section_title="Análisis contextual semanal",
+        csv_items=csv_items,
+        fig_items=[
+            {"title": "Evolución semanal % odio", "fig": fig_timeline if "fig_timeline" in locals() else None, "kind": "plotly"},
+            {"title": "Categorías de odio", "fig": fig_cat if "fig_cat" in locals() else None, "kind": "plotly"},
+            {"title": "Colectivos atacados", "fig": fig_tgt if "fig_tgt" in locals() else None, "kind": "plotly"},
+            {"title": "Temas detectados", "fig": fig_tema if "fig_tema" in locals() else None, "kind": "plotly"},
+            {"title": "Intensidad del odio", "fig": fig_int if "fig_int" in locals() else None, "kind": "plotly"},
+        ],
+    )
+
 
 def render_comparativa():
     st.title("Comparativa: Baseline vs LLM")
@@ -1831,6 +2066,20 @@ def render_comparativa():
             fig_cat.update_layout(height=350, yaxis=dict(autorange="reversed"))
             st.plotly_chart(fig_cat, use_container_width=True)
 
+    render_section_exports(
+        section_key="comparativa_modelos",
+        section_title="Comparativa Baseline vs LLM",
+        csv_items=[
+            ("comparativa_raw", df if "df" in locals() else pd.DataFrame()),
+            ("comparativa_filtrada", df_clean if "df_clean" in locals() else pd.DataFrame()),
+            ("comparativa_categoria", cat_agg if "cat_agg" in locals() else pd.DataFrame()),
+        ],
+        fig_items=[
+            {"title": "Matriz de concordancia", "fig": fig if "fig" in locals() else None, "kind": "plotly"},
+            {"title": "Acuerdo por categoría", "fig": fig_cat if "fig_cat" in locals() else None, "kind": "plotly"},
+        ],
+    )
+
 
 def render_calidad_llm():
     st.title("Calidad del etiquetado LLM")
@@ -1907,6 +2156,18 @@ def render_calidad_llm():
         )
         fig.update_layout(height=350, yaxis=dict(autorange="reversed"))
         st.plotly_chart(fig, use_container_width=True)
+
+    render_section_exports(
+        section_key="calidad_llm",
+        section_title="Calidad del etiquetado LLM",
+        csv_items=[
+            ("validaciones", df if "df" in locals() else pd.DataFrame()),
+            ("accuracy_categoria", cat_acc if "cat_acc" in locals() else pd.DataFrame()),
+        ],
+        fig_items=[
+            {"title": "Accuracy por categoría", "fig": fig if "fig" in locals() else None, "kind": "plotly"},
+        ],
+    )
 
 
 def render_terminos():
@@ -2037,6 +2298,20 @@ def render_terminos():
     st.markdown("### Detalle")
     df_all = pd.DataFrame(counter.most_common(100), columns=["Término", "Frecuencia"])
     st.dataframe(df_all, use_container_width=True, hide_index=True)
+
+    render_section_exports(
+        section_key="terminos_frecuentes",
+        section_title="Términos de odio más frecuentes",
+        csv_items=[
+            ("terminos_top", df_terms if "df_terms" in locals() else pd.DataFrame()),
+            ("terminos_detalle", df_all if "df_all" in locals() else pd.DataFrame()),
+            ("mensajes_filtrados", df if "df" in locals() else pd.DataFrame()),
+        ],
+        fig_items=[
+            {"title": "Top términos frecuentes", "fig": fig if "fig" in locals() else None, "kind": "plotly"},
+            {"title": "Nube de palabras", "fig": fig_wc if "fig_wc" in locals() else None, "kind": "matplotlib"},
+        ],
+    )
 
 
 # ============================================================
@@ -2529,6 +2804,34 @@ def render_gold_dataset():
             hide_index=True,
             height=400,
         )
+
+    render_section_exports(
+        section_key="dataset_gold",
+        section_title="Dataset Gold",
+        csv_items=[
+            ("gold_filtrado", df_f if "df_f" in locals() else pd.DataFrame()),
+            ("dudosos_pendientes", df_dudosos if "df_dudosos" in locals() else pd.DataFrame()),
+            ("resumen_plataforma", plat_summary_df if "plat_summary_df" in locals() else pd.DataFrame()),
+            ("correcciones_categoria", corr_by_cat if "corr_by_cat" in locals() else pd.DataFrame()),
+            ("correcciones_anotador", corr_annot if "corr_annot" in locals() else pd.DataFrame()),
+            ("resumen_anual", summary.reset_index() if "summary" in locals() and isinstance(summary, pd.DataFrame) else pd.DataFrame()),
+        ],
+        fig_items=[
+            {"title": "Muestras por plataforma", "fig": fig_plat if "fig_plat" in locals() else None, "kind": "plotly"},
+            {"title": "Porcentaje de odio por plataforma", "fig": fig_plat_odio if "fig_plat_odio" in locals() else None, "kind": "plotly"},
+            {"title": "Distribución odio/no odio", "fig": fig_odio if "fig_odio" in locals() else None, "kind": "plotly"},
+            {"title": "Categorías finales", "fig": fig_cat if "fig_cat" in locals() else None, "kind": "plotly"},
+            {"title": "Intensidad del odio", "fig": fig_int if "fig_int" in locals() else None, "kind": "plotly"},
+            {"title": "Intensidad por categoría", "fig": fig_int_cat if "fig_int_cat" in locals() else None, "kind": "plotly"},
+            {"title": "Tasa de corrección humana", "fig": fig_corr if "fig_corr" in locals() else None, "kind": "plotly"},
+            {"title": "Matriz de confusión", "fig": fig_cm if "fig_cm" in locals() else None, "kind": "plotly"},
+            {"title": "Correcciones por categoría", "fig": fig_corr_cat if "fig_corr_cat" in locals() else None, "kind": "plotly"},
+            {"title": "Mensajes por anotador", "fig": fig_annot if "fig_annot" in locals() else None, "kind": "plotly"},
+            {"title": "Corrección por anotador", "fig": fig_corr_annot if "fig_corr_annot" in locals() else None, "kind": "plotly"},
+            {"title": "Origen del label", "fig": fig_source if "fig_source" in locals() else None, "kind": "plotly"},
+            {"title": "Distribución train/test", "fig": fig_split if "fig_split" in locals() else None, "kind": "plotly"},
+        ],
+    )
 
 
 # ============================================================
@@ -3325,6 +3628,21 @@ def _render_art510_preview(sel_platforms, sel_sources):
     df_display = df[display_cols].rename(columns=rename_map)
     st.dataframe(df_display, use_container_width=True, hide_index=True, height=500)
 
+    render_section_exports(
+        section_key="art510_preview",
+        section_title="Art. 510 — Vista previa",
+        csv_items=[
+            ("candidatos", df if "df" in locals() else pd.DataFrame()),
+            ("vista_agrupada", pivot.reset_index() if "pivot" in locals() else pd.DataFrame()),
+            ("detalle", df_display if "df_display" in locals() else pd.DataFrame()),
+        ],
+        fig_items=[
+            {"title": "Candidatos por grupo protegido", "fig": fig_cat if "fig_cat" in locals() else None, "kind": "plotly"},
+            {"title": "Candidatos por plataforma y fuente", "fig": fig_gr if "fig_gr" in locals() else None, "kind": "plotly"},
+            {"title": "Distribución de intensidad", "fig": fig_int if "fig_int" in locals() else None, "kind": "plotly"},
+        ],
+    )
+
     # ── Ejecutar evaluación LLM ──
     st.markdown("---")
     st.markdown("### Ejecutar evaluación Art. 510.1")
@@ -3844,6 +4162,31 @@ def _render_art510_full(summary, sel_platforms, sel_sources, solo_delitos):
             }
             df_display = df_delitos[display_cols].rename(columns=rename_map)
             st.dataframe(df_display, use_container_width=True, hide_index=True, height=500)
+
+    render_section_exports(
+        section_key="art510_full",
+        section_title="Art. 510 — Evaluación completa",
+        csv_items=[
+            ("evaluaciones_filtradas", df if "df" in locals() else pd.DataFrame()),
+            ("evaluaciones_comparativa", df_cmp_all if "df_cmp_all" in locals() else pd.DataFrame()),
+            ("evaluaciones_ultima_ejecucion", df_last_run if "df_last_run" in locals() else pd.DataFrame()),
+            ("evaluaciones_historico_previo", df_prev_runs if "df_prev_runs" in locals() else pd.DataFrame()),
+            ("validacion_humana", df_vh if "df_vh" in locals() else pd.DataFrame()),
+            ("potenciales_delito", df_delitos if "df_delitos" in locals() else pd.DataFrame()),
+            ("detalle_potenciales_delito", df_display if "df_display" in locals() else pd.DataFrame()),
+        ],
+        fig_items=[
+            {"title": "Comparación % potencial delito", "fig": fig_pct if "fig_pct" in locals() else None, "kind": "plotly"},
+            {"title": "Comparación total evaluado", "fig": fig_total if "fig_total" in locals() else None, "kind": "plotly"},
+            {"title": "Decisiones validación humana", "fig": fig_dec if "fig_dec" in locals() else None, "kind": "plotly"},
+            {"title": "Confianza LLM en validados", "fig": fig_conf_vh if "fig_conf_vh" in locals() else None, "kind": "plotly"},
+            {"title": "Apartados confirmados/corregidos", "fig": fig_ap_h if "fig_ap_h" in locals() else None, "kind": "plotly"},
+            {"title": "Distribución por apartado", "fig": fig_ap if "fig_ap" in locals() else None, "kind": "plotly"},
+            {"title": "Distribución por grupo protegido", "fig": fig_gp if "fig_gp" in locals() else None, "kind": "plotly"},
+            {"title": "Plataforma x fuente", "fig": fig_grouped if "fig_grouped" in locals() else None, "kind": "plotly"},
+            {"title": "Distribución por confianza", "fig": fig_conf if "fig_conf" in locals() else None, "kind": "plotly"},
+        ],
+    )
 
     # ── Evaluar nuevos mensajes (expander discreto) ──
     already_done = _art510_get_already_evaluated()
@@ -4505,6 +4848,32 @@ def render_delitos():
     summary["Total"] = summary.sum(axis=1)
     summary = summary.sort_values("Total", ascending=False)
     st.dataframe(summary, use_container_width=True)
+
+    render_section_exports(
+        section_key="delitos_oficiales",
+        section_title="Delitos de odio (oficial)",
+        csv_items=[
+            ("totales_filtrados", df_totals_f if "df_totals_f" in locals() else pd.DataFrame()),
+            ("esclarecidos_filtrados", df_solved_f if "df_solved_f" in locals() else pd.DataFrame()),
+            ("evolucion_anual", agg_year if "agg_year" in locals() else pd.DataFrame()),
+            ("esclarecimiento_motivo", merged if "merged" in locals() else pd.DataFrame()),
+            ("autores_edad", age_agg if "age_agg" in locals() else pd.DataFrame()),
+            ("investigados_sexo", sex_agg if "sex_agg" in locals() else pd.DataFrame()),
+            ("fiscalia_motivos", pros_agg if "pros_agg" in locals() else pd.DataFrame()),
+            ("articulos_penales", art_agg if "art_agg" in locals() else pd.DataFrame()),
+            ("resumen_tabla", summary.reset_index() if "summary" in locals() and isinstance(summary, pd.DataFrame) else pd.DataFrame()),
+        ],
+        fig_items=[
+            {"title": "Evolución anual (líneas)", "fig": fig_line if "fig_line" in locals() else None, "kind": "plotly"},
+            {"title": "Evolución anual (barras)", "fig": fig_bar if "fig_bar" in locals() else None, "kind": "plotly"},
+            {"title": "Tasa de esclarecimiento", "fig": fig_solve if "fig_solve" in locals() else None, "kind": "plotly"},
+            {"title": "Autores por edad (barras)", "fig": fig_age if "fig_age" in locals() else None, "kind": "plotly"},
+            {"title": "Autores por edad (líneas)", "fig": fig_age_l if "fig_age_l" in locals() else None, "kind": "plotly"},
+            {"title": "Investigados por sexo", "fig": fig_sex if "fig_sex" in locals() else None, "kind": "plotly"},
+            {"title": "Fiscalía por motivo", "fig": fig_pros if "fig_pros" in locals() else None, "kind": "plotly"},
+            {"title": "Artículos del código penal", "fig": fig_art if "fig_art" in locals() else None, "kind": "plotly"},
+        ],
+    )
 
 
 # ============================================================
